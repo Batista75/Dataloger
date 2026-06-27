@@ -15,6 +15,8 @@ POWER_INTERVAL_SECONDS = 20
 WATT_HISTORY_SIZE = 20
 MOVING_AVG_WINDOW_SAMPLES = 4
 OUTLIER_RATIO = 0.5
+POWER_MIN_W = -6000.0
+POWER_MAX_W = 9000.0
 SAMPLES_20S_PER_HOUR = 180
 HOURS_PER_DAY = 24
 
@@ -125,11 +127,16 @@ class CollectorService:
 		stable_values: dict[str, float] = {}
 
 		for channel in CHANNELS:
-			raw_value = float(raw_signed_power_w.get(channel, 0.0))
-			self._raw_w_history[channel].append(raw_value)
-
 			moving_avg = _mean_tail(self._raw_w_history[channel], MOVING_AVG_WINDOW_SAMPLES)
 			confirmed = self._confirmed_power_w[channel]
+			raw_value = float(raw_signed_power_w.get(channel, 0.0))
+
+			# Hard safety bounds: if value is out of physical range, keep previous confirmed value.
+			if raw_value < POWER_MIN_W or raw_value > POWER_MAX_W:
+				raw_value = confirmed
+
+			self._raw_w_history[channel].append(raw_value)
+			moving_avg = _mean_tail(self._raw_w_history[channel], MOVING_AVG_WINDOW_SAMPLES)
 			pending = self._pending_outlier_w[channel]
 
 			if pending is not None:
