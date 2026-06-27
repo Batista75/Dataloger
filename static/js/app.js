@@ -33,6 +33,7 @@ const CONFIG = {
 let appState = {
     currentPage: 'dashboard',
     chartInstance: null,
+    climateChartInstance: null,
     lastUpdate: null,
     historyPage: 0,
     selectedFromDate: null,
@@ -44,6 +45,8 @@ let appState = {
     selectedGraphChannels: new Set(['total']),
     latestTemperature: null,
     latestTemperatureAgeSeconds: null,
+    climateSeries: [],
+    lastClimateRefreshMs: 0,
 };
 
 // Initialize app
@@ -63,6 +66,7 @@ function startApp() {
 
         setInterval(updateAllData, CONFIG.REFRESH_INTERVAL);
         setInterval(() => refreshPowerAnalytics(false), CONFIG.CHART_REFRESH_INTERVAL);
+        setInterval(() => refreshClimateAnalytics(false), CONFIG.CHART_REFRESH_INTERVAL);
     } catch (error) {
         console.error('Bootstrap error:', error);
         const statusText = document.getElementById('status-text');
@@ -449,6 +453,7 @@ function switchPage(page) {
     }
     if (page === 'dashboard') {
         refreshPowerAnalytics(true);
+        refreshClimateAnalytics(true);
     }
 }
 
@@ -482,6 +487,7 @@ async function updateAllData() {
         }
 
         await refreshPowerAnalytics(false);
+        await refreshClimateAnalytics(false);
         updateFooter();
     } catch (error) {
         console.error('Error fetching data:', error);
@@ -498,20 +504,32 @@ function formatAge(ageSeconds) {
 
 function updateTemperatureCard() {
     const valueNode = document.getElementById('temperature-value');
+    const humidityNode = document.getElementById('humidity-value');
+    const sensorsNode = document.getElementById('temperature-sensors-count');
     const macNode = document.getElementById('temperature-mac');
     const ageNode = document.getElementById('temperature-age');
-    if (!valueNode || !macNode || !ageNode) return;
+    if (!valueNode || !humidityNode || !sensorsNode || !macNode || !ageNode) return;
+
+    const activeSensors = new Set(
+        (appState.climateSeries || [])
+            .map((row) => (row && (row.device_mac || row.device_id) ? String(row.device_mac || row.device_id) : ''))
+            .filter(Boolean)
+    );
+    sensorsNode.textContent = activeSensors.size > 0 ? String(activeSensors.size) : '--';
 
     const payload = appState.latestTemperature;
     if (!payload) {
         valueNode.textContent = '-- deg C';
+        humidityNode.textContent = '-- %';
         macNode.textContent = '--';
         ageNode.textContent = '--';
         return;
     }
 
     const temp = Number(payload.temperature_c);
+    const humidity = Number(payload.humidity_pct);
     valueNode.textContent = Number.isFinite(temp) ? `${temp.toFixed(1)} deg C` : '-- deg C';
+    humidityNode.textContent = Number.isFinite(humidity) ? `${humidity.toFixed(1)} %` : '-- %';
     macNode.textContent = payload.device_mac || '--';
     ageNode.textContent = formatAge(appState.latestTemperatureAgeSeconds);
 }
@@ -638,6 +656,162 @@ function renderTrendChart() {
                     title: {
                         display: true,
                         text: 'Puissance signee (W)',
+                    },
+                },
+            },
+        },
+    });
+}
+
+async function refreshClimateAnalytics(force) {
+    const now = Date.now();
+    if (!force && now - appState.lastClimateRefreshMs < CONFIG.CHART_REFRESH_INTERVAL - 2000) {
+        return;
+    }
+
+    try {
+        const minutes = Math.max(CONFIG.CHART_HOURS, 1) * 60;
+        const response = await fetch(`${CONFIG.API_BASE}/api/temperature/history?minutes=${minutes}&limit=10000`);
+        if (!response.ok) throw new Error('Failed to load climate analytics');
+
+        const payload = await response.json();
+        const rows = Array.isArray(payload.data) ? payload.data : [];
+        appState.climateSeries = rows
+            .filter((row) => Number.isFinite(parseTimestampMs(row.ts_utc)))
+            .sort((a, b) => parseTimestampMs(a.ts_utc) - parseTimestampMs(b.ts_utc));
+        appState.lastClimateRefreshMs = now;
+
+        renderClimateChart();
+    } catch (error) {
+        console.error('Error loading climate analytics:', error);
+    }
+}
+
+function renderClimateChart() {
+    const canvas = document.getElementById('climate-chart');
+    if (!canvas) return;
+
+    const series = Array.isArray(appState.climateSeries) ? appState.climateSeries : [];
+    const cutoff = Date.now() - CONFIG.CHART_HOURS * 3600 * 1000;
+    const windowed = series.filter((p) => parseTimestampMs(p.ts_utc) >= cutoff);
+
+    if (windowed.length === 0) {
+        if (appState.climateChartInstance) {
+            appState.climateChartInstance.destroy();
+            appState.climateChartInstance = null;
+        }
+        return;
+    }
+
+    const timeKeys = Array.from(new Set(windowed.map((p) => p.ts_utc))).sort((a, b) => parseTimestampMs(a) - parseTimestampMs(b));
+    const labels = timeKeys.map((ts) => formatChartTime(ts));
+
+    const bySensor = new Map();
+    windowed.forEach((row) => {
+        const sensorKey = String(row.device_mac || row.device_id || 'unknown');
+        if (!bySensor.has(sensorKey)) bySensor.set(sensorKey, new Map());
+        bySensor.get(sensorKey).set(row.ts_utc, row);
+    });
+
+    const palette = ['#dc2626', '#f97316', '#0ea5e9', '#16a34a', '#a855f7', '#e11d48'];
+    const sensorKeys = Array.from(bySensor.keys()).sort();
+    const datasets = [];
+
+    sensorKeys.forEach((sensorKey, index) => {
+        const color = palette[index % palette.length];
+        const rowMap = bySensor.get(sensorKey);
+        const tempData = timeKeys.map((ts) => {
+            const value = Number(rowMap.get(ts)?.temperature_c);
+            return Number.isFinite(value) ? value : null;
+        });
+        const humData = timeKeys.map((ts) => {
+            const value = Number(rowMap.get(ts)?.humidity_pct);
+            return Number.isFinite(value) ? value : null;
+        });
+
+        if (tempData.some((value) => Number.isFinite(value))) {
+            datasets.push({
+                label: `${sensorKey} - Temp (deg C)`,
+                data: tempData,
+                borderColor: color,
+                backgroundColor: 'transparent',
+                borderWidth: 2.5,
+                tension: 0.25,
+                fill: false,
+                yAxisID: 'yTemp',
+            });
+        }
+
+        if (humData.some((value) => Number.isFinite(value))) {
+            datasets.push({
+                label: `${sensorKey} - Hum (%)`,
+                data: humData,
+                borderColor: color,
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                borderDash: [6, 4],
+                tension: 0.25,
+                fill: false,
+                yAxisID: 'yHum',
+            });
+        }
+    });
+
+    if (datasets.length === 0) return;
+
+    const ctx = canvas.getContext('2d');
+    if (appState.climateChartInstance) {
+        appState.climateChartInstance.destroy();
+    }
+
+    appState.climateChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: { labels, datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { position: 'top' },
+            },
+            scales: {
+                x: {
+                    ticks: {
+                        autoSkip: false,
+                        maxRotation: 0,
+                        minRotation: 0,
+                        callback(value, index) {
+                            const label = labels[index];
+                            return isHalfHourLabel(timeKeys[index]) ? label : '';
+                        },
+                    },
+                    grid: {
+                        color(context) {
+                            return isQuarterHourLabel(timeKeys[context.index])
+                                ? 'rgba(148, 163, 184, 0.35)'
+                                : 'rgba(148, 163, 184, 0.08)';
+                        },
+                    },
+                },
+                yTemp: {
+                    type: 'linear',
+                    position: 'left',
+                    title: {
+                        display: true,
+                        text: 'Temperature (deg C)',
+                    },
+                },
+                yHum: {
+                    type: 'linear',
+                    position: 'right',
+                    suggestedMin: 0,
+                    suggestedMax: 100,
+                    grid: {
+                        drawOnChartArea: false,
+                    },
+                    title: {
+                        display: true,
+                        text: 'Humidite (%)',
                     },
                 },
             },

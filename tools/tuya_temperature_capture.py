@@ -63,6 +63,36 @@ def _find_temperature_c(dps: dict[str, Any], preferred_dp: str | None) -> float 
     return None
 
 
+def _find_humidity_pct(dps: dict[str, Any], preferred_dp: str | None) -> tuple[float | None, str | None, Any]:
+    if preferred_dp and preferred_dp in dps:
+        value = _to_number(dps.get(preferred_dp))
+        if value is not None:
+            humidity = _normalize_humidity(value)
+            if humidity is not None:
+                return humidity, preferred_dp, dps.get(preferred_dp)
+
+    candidate_keys = ["4", "5", "6", "7", "8", "10", "23", "103", "104"]
+    for key in candidate_keys:
+        if key not in dps:
+            continue
+        value = _to_number(dps.get(key))
+        if value is None:
+            continue
+        humidity = _normalize_humidity(value)
+        if humidity is not None:
+            return humidity, key, dps.get(key)
+
+    for key, raw_value in dps.items():
+        value = _to_number(raw_value)
+        if value is None:
+            continue
+        humidity = _normalize_humidity(value)
+        if humidity is not None:
+            return humidity, str(key), raw_value
+
+    return None, None, None
+
+
 def _find_temperature_from_cloud_status(
     status_rows: list[dict[str, Any]], preferred_code: str | None
 ) -> tuple[float | None, str | None, Any]:
@@ -108,6 +138,50 @@ def _find_temperature_from_cloud_status(
     return None, None, None
 
 
+def _find_humidity_from_cloud_status(
+    status_rows: list[dict[str, Any]], preferred_code: str | None
+) -> tuple[float | None, str | None, Any]:
+    code_map: dict[str, Any] = {}
+    for row in status_rows:
+        if not isinstance(row, dict):
+            continue
+        code = row.get("code")
+        if isinstance(code, str):
+            code_map[code] = row.get("value")
+
+    if preferred_code and preferred_code in code_map:
+        value = _to_number(code_map[preferred_code])
+        if value is not None:
+            humidity = _normalize_humidity(value)
+            if humidity is not None:
+                return humidity, preferred_code, code_map[preferred_code]
+
+    candidate_codes = [
+        "va_humidity",
+        "humidity",
+        "hum",
+        "cur_humidity",
+        "humidity_value",
+    ]
+    for code in candidate_codes:
+        value = _to_number(code_map.get(code))
+        if value is None:
+            continue
+        humidity = _normalize_humidity(value)
+        if humidity is not None:
+            return humidity, code, code_map.get(code)
+
+    for code, raw_value in code_map.items():
+        value = _to_number(raw_value)
+        if value is None:
+            continue
+        humidity = _normalize_humidity(value)
+        if humidity is not None:
+            return humidity, code, raw_value
+
+    return None, None, None
+
+
 def _normalize_temperature(value: float) -> float | None:
     # Tuya often reports temperature with x10 precision (e.g. 253 => 25.3C)
     if -500 <= value <= 800:
@@ -120,6 +194,19 @@ def _normalize_temperature(value: float) -> float | None:
 
     if -60 <= temp <= 120:
         return round(temp, 2)
+    return None
+
+
+def _normalize_humidity(value: float) -> float | None:
+    humidity = value
+    if humidity > 100:
+        if humidity <= 1000:
+            humidity = humidity / 10.0
+        else:
+            humidity = humidity / 100.0
+
+    if 0 <= humidity <= 100:
+        return round(humidity, 2)
     return None
 
 
@@ -182,10 +269,15 @@ def _append_csv(path: Path, payload: dict[str, Any]) -> None:
         "device_ip",
         "device_mac",
         "temperature_c",
+        "humidity_pct",
         "dps_key",
         "raw_value",
+        "humidity_key",
+        "humidity_raw_value",
         "source",
     ]
+
+    _ensure_csv_schema(path, fieldnames)
     file_exists = path.exists()
 
     with path.open("a", newline="", encoding="utf-8") as fh:
@@ -195,7 +287,53 @@ def _append_csv(path: Path, payload: dict[str, Any]) -> None:
         writer.writerow({name: payload.get(name) for name in fieldnames})
 
 
-def _read_device_status_local(args: argparse.Namespace) -> dict[str, Any]:
+def _ensure_csv_schema(path: Path, fieldnames: list[str]) -> None:
+    if not path.exists():
+        return
+
+    try:
+        with path.open("r", newline="", encoding="utf-8") as fh:
+            first_line = fh.readline().strip()
+    except OSError:
+        return
+
+    expected = ",".join(fieldnames)
+    if first_line == expected:
+        return
+
+    migrated: list[dict[str, Any]] = []
+    try:
+        with path.open("r", newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                if not isinstance(row, dict):
+                    continue
+                migrated.append(
+                    {
+                        "ts_utc": row.get("ts_utc"),
+                        "device_id": row.get("device_id"),
+                        "device_ip": row.get("device_ip"),
+                        "device_mac": row.get("device_mac"),
+                        "temperature_c": row.get("temperature_c"),
+                        "humidity_pct": row.get("humidity_pct"),
+                        "dps_key": row.get("dps_key"),
+                        "raw_value": row.get("raw_value"),
+                        "humidity_key": row.get("humidity_key"),
+                        "humidity_raw_value": row.get("humidity_raw_value"),
+                        "source": row.get("source"),
+                    }
+                )
+    except OSError:
+        return
+
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in migrated:
+            writer.writerow({name: row.get(name) for name in fieldnames})
+
+
+def _read_device_status_local(args: argparse.Namespace, device_id: str) -> dict[str, Any]:
     retries = max(1, int(args.retries))
     delay_seconds = max(0.0, float(args.retry_delay_seconds))
     last_exc: Exception | None = None
@@ -203,7 +341,7 @@ def _read_device_status_local(args: argparse.Namespace) -> dict[str, Any]:
     for attempt in range(1, retries + 1):
         try:
             device = tinytuya.Device(
-                dev_id=args.device_id,
+                dev_id=device_id,
                 address=args.ip,
                 local_key=args.local_key,
                 version=float(args.version),
@@ -220,7 +358,7 @@ def _read_device_status_local(args: argparse.Namespace) -> dict[str, Any]:
     raise RuntimeError(f"TinyTuya status failed after {retries} attempt(s): {last_exc}")
 
 
-def _read_device_status_cloud(args: argparse.Namespace) -> dict[str, Any]:
+def _read_device_status_cloud(args: argparse.Namespace, device_id: str) -> dict[str, Any]:
     if not args.api_key or not args.api_secret:
         raise ValueError("Cloud mode requires --api-key and --api-secret")
 
@@ -228,9 +366,9 @@ def _read_device_status_cloud(args: argparse.Namespace) -> dict[str, Any]:
         apiRegion=str(args.api_region),
         apiKey=str(args.api_key),
         apiSecret=str(args.api_secret),
-        apiDeviceID=str(args.device_id),
+        apiDeviceID=str(device_id),
     )
-    status = cloud.getstatus(str(args.device_id))
+    status = cloud.getstatus(str(device_id))
     if not isinstance(status, dict):
         raise RuntimeError("TinyTuya Cloud returned a non-dict status payload")
     if status.get("success") is not True:
@@ -238,10 +376,78 @@ def _read_device_status_cloud(args: argparse.Namespace) -> dict[str, Any]:
     return status
 
 
-def _build_payload(args: argparse.Namespace) -> dict[str, Any]:
+def _list_cloud_devices(args: argparse.Namespace) -> list[dict[str, Any]]:
+    if not args.api_key or not args.api_secret:
+        return []
+
+    cloud = tinytuya.Cloud(
+        apiRegion=str(args.api_region),
+        apiKey=str(args.api_key),
+        apiSecret=str(args.api_secret),
+        apiDeviceID=str(args.device_id) if args.device_id else None,
+    )
+    devices = cloud.getdevices()
+    if not isinstance(devices, list):
+        return []
+    return [device for device in devices if isinstance(device, dict)]
+
+
+def _resolve_targets(args: argparse.Namespace) -> list[dict[str, str]]:
+    targets: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    ids = _split_csv_values(getattr(args, "device_ids", ""))
+    if args.device_id:
+        ids.append(str(args.device_id))
+
+    for device_id in ids:
+        key = (str(device_id), _normalize_mac(args.device_mac or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append(
+            {
+                "device_id": str(device_id),
+                "device_mac": _normalize_mac(args.device_mac or ""),
+            }
+        )
+
+    target_macs = {_normalize_mac(mac) for mac in _split_csv_values(args.target_macs)}
+    mode = str(args.mode).lower()
+    if target_macs and mode in {"cloud", "auto"} and args.api_key and args.api_secret:
+        cloud_devices = _list_cloud_devices(args)
+        by_mac: dict[str, dict[str, Any]] = {}
+
+        for device in cloud_devices:
+            mac = _normalize_mac(str(device.get("mac") or ""))
+            if mac:
+                by_mac[mac] = device
+
+        for mac in sorted(target_macs):
+            device = by_mac.get(mac)
+            if not device:
+                continue
+            device_id = str(device.get("id") or "")
+            if not device_id:
+                continue
+
+            key = (device_id, mac)
+            if key in seen:
+                continue
+            seen.add(key)
+            targets.append({"device_id": device_id, "device_mac": mac})
+
+    return targets
+
+
+def _build_payload(args: argparse.Namespace, device_id: str, device_mac: str = "") -> dict[str, Any]:
     selected_dp_key: str | None = None
     raw_value: Any = None
+    humidity_pct: float | None = None
+    humidity_key: str | None = None
+    humidity_raw_value: Any = None
     preferred_dp = str(args.temperature_dp) if args.temperature_dp else None
+    preferred_humidity_dp = str(args.humidity_dp) if args.humidity_dp else None
     source = "local"
 
     mode = str(args.mode).lower()
@@ -250,7 +456,7 @@ def _build_payload(args: argparse.Namespace) -> dict[str, Any]:
 
     if mode in {"local", "auto"}:
         try:
-            status = _read_device_status_local(args)
+            status = _read_device_status_local(args, device_id)
             dps = status.get("dps", {})
             if not isinstance(dps, dict):
                 raise ValueError("No DPS object in TinyTuya local status")
@@ -258,6 +464,8 @@ def _build_payload(args: argparse.Namespace) -> dict[str, Any]:
             temp = _find_temperature_c(dps, preferred_dp)
             if temp is None:
                 raise ValueError("No plausible temperature value found in DPS payload")
+
+            humidity_pct, humidity_key, humidity_raw_value = _find_humidity_pct(dps, preferred_humidity_dp)
 
             selected_dp_key = preferred_dp if preferred_dp and preferred_dp in dps else None
             raw_value = dps.get(selected_dp_key) if selected_dp_key else None
@@ -276,32 +484,37 @@ def _build_payload(args: argparse.Namespace) -> dict[str, Any]:
         except Exception:
             if mode == "local":
                 raise
-            status = _read_device_status_cloud(args)
+            status = _read_device_status_cloud(args, device_id)
             rows = status.get("result", [])
             if not isinstance(rows, list):
                 raise ValueError("No result[] array in TinyTuya cloud status")
             temp, selected_dp_key, raw_value = _find_temperature_from_cloud_status(rows, preferred_dp)
             if temp is None:
                 raise ValueError("No plausible temperature value found in cloud status payload")
+            humidity_pct, humidity_key, humidity_raw_value = _find_humidity_from_cloud_status(rows, preferred_humidity_dp)
             source = "cloud"
     else:
-        status = _read_device_status_cloud(args)
+        status = _read_device_status_cloud(args, device_id)
         rows = status.get("result", [])
         if not isinstance(rows, list):
             raise ValueError("No result[] array in TinyTuya cloud status")
         temp, selected_dp_key, raw_value = _find_temperature_from_cloud_status(rows, preferred_dp)
         if temp is None:
             raise ValueError("No plausible temperature value found in cloud status payload")
+        humidity_pct, humidity_key, humidity_raw_value = _find_humidity_from_cloud_status(rows, preferred_humidity_dp)
         source = "cloud"
 
     return {
         "ts_utc": datetime.now(timezone.utc).isoformat(),
-        "device_id": args.device_id,
+        "device_id": device_id,
         "device_ip": args.ip if source == "local" else "cloud",
-        "device_mac": _normalize_mac(args.device_mac),
+        "device_mac": _normalize_mac(device_mac or args.device_mac),
         "temperature_c": temp,
+        "humidity_pct": humidity_pct,
         "dps_key": selected_dp_key,
         "raw_value": raw_value,
+        "humidity_key": humidity_key,
+        "humidity_raw_value": humidity_raw_value,
         "source": source,
     }
 
@@ -317,16 +530,28 @@ def _should_emit(prev_payload: dict[str, Any] | None, new_payload: dict[str, Any
 
 
 def _collect_once(args: argparse.Namespace) -> int:
-    try:
-        payload = _build_payload(args)
-    except Exception as exc:  # noqa: BLE001
-        print(f"ERROR: {exc}")
+    targets = _resolve_targets(args)
+    if not targets:
+        print("ERROR: no Tuya target resolved")
         return 2
 
-    _write_json(args.output_json, payload)
-    _append_csv(args.output_csv, payload)
-    print(json.dumps(payload, ensure_ascii=True))
-    return 0
+    captured = 0
+    for target in targets:
+        device_id = target.get("device_id", "")
+        if not device_id:
+            continue
+        try:
+            payload = _build_payload(args, device_id, target.get("device_mac", ""))
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARN: {device_id}: {exc}")
+            continue
+
+        _write_json(args.output_json, payload)
+        _append_csv(args.output_csv, payload)
+        print(json.dumps(payload, ensure_ascii=True))
+        captured += 1
+
+    return 0 if captured > 0 else 2
 
 
 def _collect_watch(args: argparse.Namespace) -> int:
@@ -334,23 +559,37 @@ def _collect_watch(args: argparse.Namespace) -> int:
     min_delta_c = max(0.0, float(args.min_delta_c))
     watch_seconds = max(0.0, float(args.watch_seconds))
     started = time.time()
-    prev_payload: dict[str, Any] | None = None
+    prev_payloads: dict[str, dict[str, Any]] = {}
 
     while True:
         if watch_seconds > 0 and (time.time() - started) >= watch_seconds:
             return 0
 
-        try:
-            payload = _build_payload(args)
+        targets = _resolve_targets(args)
+        if not targets:
+            print("WARN: no Tuya target resolved")
+            time.sleep(interval_seconds)
+            continue
+
+        for target in targets:
+            device_id = target.get("device_id", "")
+            if not device_id:
+                continue
+
+            try:
+                payload = _build_payload(args, device_id, target.get("device_mac", ""))
+            except Exception as exc:  # noqa: BLE001
+                print(f"WARN: {device_id}: {exc}")
+                continue
+
+            prev_payload = prev_payloads.get(device_id)
             if _should_emit(prev_payload, payload, min_delta_c):
                 _write_json(args.output_json, payload)
                 _append_csv(args.output_csv, payload)
                 print(json.dumps(payload, ensure_ascii=True))
-                prev_payload = payload
+                prev_payloads[device_id] = payload
             else:
-                print("INFO: no significant temperature change")
-        except Exception as exc:  # noqa: BLE001
-            print(f"WARN: {exc}")
+                print(f"INFO: no significant temperature change for {device_id}")
 
         time.sleep(interval_seconds)
 
@@ -400,6 +639,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument("--device-id", default=os.getenv("TUYA_TINYTUYA_DEVICE_ID", ""), help="Tuya device id")
+    parser.add_argument(
+        "--device-ids",
+        default=os.getenv("TUYA_TINYTUYA_DEVICE_IDS", ""),
+        help="Comma-separated Tuya device IDs for multi-sensor capture",
+    )
     parser.add_argument("--local-key", default=os.getenv("TUYA_TINYTUYA_LOCAL_KEY", ""), help="Tuya local key")
     parser.add_argument("--ip", default=os.getenv("TUYA_TINYTUYA_IP", ""), help="Tuya local device IP")
     parser.add_argument("--version", default=os.getenv("TUYA_TINYTUYA_VERSION", "3.3"), help="Protocol version, e.g. 3.3")
@@ -409,6 +653,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device-mac", default="", help="Known device MAC (for output traceability)")
     parser.add_argument("--target-macs", default=os.getenv("TUYA_TARGET_MACS", ""), help="Comma-separated MAC list")
     parser.add_argument("--temperature-dp", default="", help="Optional explicit DPS key for temperature")
+    parser.add_argument("--humidity-dp", default="", help="Optional explicit DPS key/code for humidity")
 
     parser.add_argument(
         "--output-json",
@@ -440,9 +685,11 @@ def main() -> int:
     mode = str(args.mode).lower()
     has_local = bool(args.local_key and args.ip)
     has_cloud = bool(args.api_key and args.api_secret)
+    has_device_ids = bool(args.device_id or _split_csv_values(args.device_ids))
+    has_target_macs = bool(_split_csv_values(args.target_macs))
 
-    if not args.device_id:
-        parser.error("--device-id is required when --scan is not used")
+    if not has_device_ids and not has_target_macs:
+        parser.error("--device-id/--device-ids or --target-macs is required when --scan is not used")
     if mode == "local" and not has_local:
         parser.error("--local-key and --ip are required in local mode")
     if mode == "cloud" and not has_cloud:

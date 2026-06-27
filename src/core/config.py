@@ -43,6 +43,7 @@ class Settings:
 	tuya_capture_mode: str = os.getenv("TUYA_CAPTURE_MODE", "local")
 	tuya_cloud_api_region: str = os.getenv("TUYA_CLOUD_API_REGION", "eu")
 	tuya_latest_json_path: Path = Path(os.getenv("TUYA_LATEST_JSON_PATH", "data/tuya_temperature_latest.json"))
+	tuya_history_csv_path: Path = Path(os.getenv("TUYA_HISTORY_CSV_PATH", "data/tuya_temperature_history.csv"))
 
 
 settings = Settings()

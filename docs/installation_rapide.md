@@ -52,6 +52,7 @@ Extension prevue: collecte temperature Tuya via TinyTuya
 	- `TUYA_ENABLED=1`
 	- `TUYA_POLL_SECONDS=30`
 	- `TUYA_TARGET_MACS=2E:82:1D:8A:64:17` (liste separee par virgules si plusieurs sondes)
+	- `TUYA_TINYTUYA_DEVICE_IDS=...` (optionnel: liste d IDs Tuya si multi-sondes)
 	- `TUYA_TINYTUYA_DEVICE_ID=...`
 	- `TUYA_TINYTUYA_LOCAL_KEY=...`
 	- `TUYA_TINYTUYA_IP=...`
@@ -63,7 +64,7 @@ Extension prevue: collecte temperature Tuya via TinyTuya
 
 Workflow TinyTuya recommande:
 1. Scanner les devices Tuya du reseau (wizard TinyTuya) pour recuperer `device_id`, `local_key`, IP et confirmer la MAC.
-2. Filtrer les devices sur `TUYA_TARGET_MACS` (incluant `2E:82:1D:8A:64:17`).
+2. Filtrer les devices sur `TUYA_TARGET_MACS` (incluant `2E:82:1D:8A:64:17`, ou plusieurs MACs).
 3. Poller periodiquement les DPS de temperature via script TinyTuya.
 4. Mapper les valeurs en degres C puis publier vers votre pipeline backend (DB/API) pour affichage interface.
 
@@ -123,7 +124,8 @@ Astuce test terrain:
 
 Integration API/UI:
 - L API expose `GET /api/temperature/latest` (source: `data/tuya_temperature_latest.json`).
-- Le dashboard affiche la temperature Tuya, la MAC et l age de la mesure.
+- L API expose aussi `GET /api/temperature/history` (source: `data/tuya_temperature_history.csv`) pour alimenter les graphes temperature/humidite.
+- Le dashboard affiche la temperature Tuya, l humidite, la MAC et l age de la mesure.
 
 Important:
 - En reel, garder `REFOSS_ALLOW_SIMULATED_FALLBACK=0`.

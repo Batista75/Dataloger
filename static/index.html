@@ -67,6 +67,8 @@
                 <div class="summary-card">
                     <div class="summary-label">Temperature Tuya</div>
                     <div class="summary-value" id="temperature-value">-- &deg;C</div>
+                    <div class="summary-meta">Humidite: <span id="humidity-value">-- %</span></div>
+                    <div class="summary-meta">Sondes actives: <span id="temperature-sensors-count">--</span></div>
                     <div class="summary-meta">Sonde: <span id="temperature-mac">--</span></div>
                     <div class="summary-meta">Age: <span id="temperature-age">--</span></div>
                 </div>
@@ -218,6 +220,14 @@
                 </div>
                 <div class="chart-legend-hint">Cochez les departs utilises pour afficher uniquement les courbes voulues.</div>
                 <canvas id="trend-chart"></canvas>
+            </div>
+
+            <div class="chart-container">
+                <div class="chart-header-row">
+                    <h2>Evolution temperature / humidite (24h)</h2>
+                </div>
+                <div class="chart-legend-hint">Donnees issues de la collecte Tuya (historique CSV).</div>
+                <canvas id="climate-chart"></canvas>
             </div>
 
             <!-- Additional Info -->
