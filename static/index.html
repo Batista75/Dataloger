@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#1a5f7a">
+    <link rel="icon" href="data:,">
+    <title>Datalogueur EM06</title>
+    <link id="app-style" rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <h1>⚡ Datalogueur EM06</h1>
+            <div class="header-status">
+                <span id="status-indicator" class="status-dot"></span>
+                <span id="status-text">Vérification...</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Navigation -->
+    <nav class="nav-tabs">
+        <button class="nav-tab active" data-page="dashboard">
+            <span class="icon">📊</span>
+            <span>Dashboard</span>
+        </button>
+        <button class="nav-tab" data-page="history">
+            <span class="icon">📈</span>
+            <span>Historique</span>
+        </button>
+        <button class="nav-tab" data-page="settings">
+            <span class="icon">⚙️</span>
+            <span>Paramètres</span>
+        </button>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="container">
+        <!-- Dashboard Page -->
+        <section id="dashboard" class="page active">
+            <!-- Instant Summary Cards -->
+            <div class="summary-grid">
+                <div class="summary-card">
+                    <div class="summary-label">Puissance consommation instantanee</div>
+                    <div class="summary-value" id="total-consumption-w">-- W</div>
+                    <div class="summary-meta">Hier: <span id="consumption-yesterday">-- W</span></div>
+                    <div class="summary-meta">Avant-hier: <span id="consumption-daybefore">-- W</span></div>
+                    <div class="summary-trend" id="consumption-trend">Tendance: --</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-label">Puissance generateur instantanee (signee)</div>
+                    <div class="summary-value" id="total-production-w">-- W</div>
+                    <div class="summary-meta">Hier: <span id="production-yesterday">-- W</span></div>
+                    <div class="summary-meta">Avant-hier: <span id="production-daybefore">-- W</span></div>
+                    <div class="summary-trend" id="production-trend">Tendance: --</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-label">Tension</div>
+                    <div class="summary-value" id="voltage-value">-- V</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-label">Fréquence</div>
+                    <div class="summary-value" id="frequency-value">-- Hz</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-label">Temperature Tuya</div>
+                    <div class="summary-value" id="temperature-value">-- &deg;C</div>
+                    <div class="summary-meta">Sonde: <span id="temperature-mac">--</span></div>
+                    <div class="summary-meta">Age: <span id="temperature-age">--</span></div>
+                </div>
+            </div>
+
+            <!-- Expandable channels -->
+            <div class="channels-container">
+                <button class="expand-toggle" id="channels-toggle" type="button" aria-expanded="true" aria-controls="channels-content">
+                    <span>Departs utilises</span>
+                    <span id="channels-toggle-icon">▾</span>
+                </button>
+                <div class="channels-content open" id="channels-content">
+                <div class="channels-grid">
+                    <!-- Channel A1 -->
+                    <div class="channel-card">
+                        <div class="channel-header" id="a1-name">Canal A1</div>
+                        <div class="channel-type" id="a1-type">Type: --</div>
+                        <div class="channel-row">
+                            <span class="channel-label">Consommation:</span>
+                            <span class="channel-value" id="a1-cons-w">-- W</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Production:</span>
+                            <span class="channel-value" id="a1-prod-w">-- W</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Tendance:</span>
+                            <span class="channel-value" id="a1-trend">--</span>
+                        </div>
+                    </div>
+
+                    <!-- Channel B1 -->
+                    <div class="channel-card">
+                        <div class="channel-header" id="b1-name">Canal B1</div>
+                        <div class="channel-type" id="b1-type">Type: --</div>
+                        <div class="channel-row">
+                            <span class="channel-label">Consommation:</span>
+                            <span class="channel-value" id="b1-cons-w">-- W</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Production:</span>
+                            <span class="channel-value" id="b1-prod-w">-- W</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Tendance:</span>
+                            <span class="channel-value" id="b1-trend">--</span>
+                        </div>
+                    </div>
+
+                    <!-- Channel C1 -->
+                    <div class="channel-card">
+                        <div class="channel-header" id="c1-name">Canal C1</div>
+                        <div class="channel-type" id="c1-type">Type: --</div>
+                        <div class="channel-row">
+                            <span class="channel-label">Consommation:</span>
+                            <span class="channel-value" id="c1-cons-w">-- W</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Production:</span>
+                            <span class="channel-value" id="c1-prod-w">-- W</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Tendance:</span>
+                            <span class="channel-value" id="c1-trend">--</span>
+                        </div>
+                    </div>
+
+                    <!-- Channel A2 -->
+                    <div class="channel-card">
+                        <div class="channel-header" id="a2-name">Canal A2</div>
+                        <div class="channel-type" id="a2-type">Type: --</div>
+                        <div class="channel-row">
+                            <span class="channel-label">Consommation:</span>
+                            <span class="channel-value" id="a2-cons-w">-- W</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Production:</span>
+                            <span class="channel-value" id="a2-prod-w">-- W</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Tendance:</span>
+                            <span class="channel-value" id="a2-trend">--</span>
+                        </div>
+                    </div>
+
+                    <!-- Channel B2 -->
+                    <div class="channel-card">
+                        <div class="channel-header" id="b2-name">Canal B2</div>
+                        <div class="channel-type" id="b2-type">Type: --</div>
+                        <div class="channel-row">
+                            <span class="channel-label">Consommation:</span>
+                            <span class="channel-value" id="b2-cons-w">-- W</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Production:</span>
+                            <span class="channel-value" id="b2-prod-w">-- W</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Tendance:</span>
+                            <span class="channel-value" id="b2-trend">--</span>
+                        </div>
+                    </div>
+
+                    <!-- Channel C2 -->
+                    <div class="channel-card">
+                        <div class="channel-header" id="c2-name">Canal C2</div>
+                        <div class="channel-type" id="c2-type">Type: --</div>
+                        <div class="channel-row">
+                            <span class="channel-label">Consommation:</span>
+                            <span class="channel-value" id="c2-cons-w">-- W</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Production:</span>
+                            <span class="channel-value" id="c2-prod-w">-- W</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Tendance:</span>
+                            <span class="channel-value" id="c2-trend">--</span>
+                        </div>
+                    </div>
+                </div>
+                </div>
+            </div>
+
+            <div class="billing-container">
+                <h2>Estimation économique</h2>
+                <div class="billing-grid">
+                    <div class="billing-item">
+                        <span class="billing-label">Conso nette vers EDF</span>
+                        <span class="billing-value" id="billing-net-grid">-- kWh</span>
+                    </div>
+                    <div class="billing-item">
+                        <span class="billing-label">Facture estimée</span>
+                        <span class="billing-value" id="billing-estimated-cost">-- EUR</span>
+                    </div>
+                    <div class="billing-item">
+                        <span class="billing-label">Valorisation revente</span>
+                        <span class="billing-value" id="billing-feed-in-value">-- EUR</span>
+                    </div>
+                </div>
+                <p id="billing-note" class="billing-note">--</p>
+            </div>
+
+            <!-- Instant power chart -->
+            <div class="chart-container">
+                <div class="chart-header-row">
+                    <h2>Evolution instantanee en Watt (24h)</h2>
+                    <div id="chart-filters" class="chart-filters" aria-label="Filtre des departs"></div>
+                </div>
+                <div class="chart-legend-hint">Cochez les departs utilises pour afficher uniquement les courbes voulues.</div>
+                <canvas id="trend-chart"></canvas>
+            </div>
+
+            <!-- Additional Info -->
+            <div class="info-section">
+                <h3>Informations système</h3>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <span class="info-label">État capteur:</span>
+                        <span id="sensor-state" class="info-value">Vérification...</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Dernier relevé:</span>
+                        <span id="last-update" class="info-value">--:--:--</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Mode collecte:</span>
+                        <span id="em06-mode" class="info-value">--</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Facteur de puissance:</span>
+                        <span id="power-factor-value" class="info-value">--</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- History Page -->
+        <section id="history" class="page">
+            <div class="history-controls">
+                <div class="control-group">
+                    <label for="from-date">De:</label>
+                    <input type="date" id="from-date">
+                </div>
+                <div class="control-group">
+                    <label for="to-date">À:</label>
+                    <input type="date" id="to-date">
+                </div>
+                <button id="apply-filter" class="btn-primary">Appliquer</button>
+            </div>
+
+            <div class="history-table-container">
+                <table id="history-table" class="history-table">
+                    <thead>
+                        <tr>
+                            <th>Heure</th>
+                            <th>Prod Total (kWh)</th>
+                            <th>Cons Total (kWh)</th>
+                            <th>Tension (V)</th>
+                            <th>Facteur Puissance</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-tbody">
+                        <tr>
+                            <td colspan="5" class="loading">Chargement...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="pagination">
+                <button id="prev-page" class="btn-secondary">← Précédent</button>
+                <span id="page-info">--</span>
+                <button id="next-page" class="btn-secondary">Suivant →</button>
+            </div>
+        </section>
+
+        <!-- Settings Page -->
+        <section id="settings" class="page">
+            <div class="settings-group">
+                <h2>Configuration</h2>
+                
+                <div class="setting-item">
+                    <label for="refresh-interval">Intervalle de rafraîchissement:</label>
+                    <div class="setting-input">
+                        <input type="number" id="refresh-interval" min="1" max="60" value="3">
+                        <span>secondes</span>
+                    </div>
+                </div>
+
+                <div class="setting-item">
+                    <label for="chart-hours">Données du graphique:</label>
+                    <div class="setting-input">
+                        <input type="number" id="chart-hours" min="1" max="720" value="24">
+                        <span>heures</span>
+                    </div>
+                </div>
+
+                <div class="setting-item">
+                    <label for="buy-price-kwh">Prix achat électricité:</label>
+                    <div class="setting-input">
+                        <input type="number" id="buy-price-kwh" min="0" step="0.001" value="0.25">
+                        <span>EUR/kWh</span>
+                    </div>
+                </div>
+
+                <div class="setting-item">
+                    <label for="has-resale-contract">Contrat de revente établi:</label>
+                    <div class="setting-input">
+                        <input type="checkbox" id="has-resale-contract">
+                        <span>Activer la valorisation revente</span>
+                    </div>
+                </div>
+
+                <div class="setting-item">
+                    <label for="sell-price-kwh">Tarif rachat injecté:</label>
+                    <div class="setting-input">
+                        <input type="number" id="sell-price-kwh" min="0" step="0.001" value="0.011">
+                        <span>EUR/kWh</span>
+                    </div>
+                </div>
+
+                <div class="setting-item">
+                    <label for="cfg-a1-name">Définition des canaux (Nom, Type, Graph):</label>
+                    <div class="channels-settings-grid">
+                        <div class="channel-setting-row">
+                            <span class="channel-key">A1</span>
+                            <input type="text" id="cfg-a1-name" value="Canal A1" aria-label="Nom canal A1">
+                            <select id="cfg-a1-type" aria-label="Type canal A1">
+                                <option value="unused">Non utilisé</option>
+                                <option value="consumption">Consommation</option>
+                                <option value="edf_total">Consommation totale EDF</option>
+                                <option value="generator">Générateur</option>
+                            </select>
+                            <select id="cfg-a1-graph" aria-label="Afficher canal A1 sur le graphe">
+                                <option value="yes">Graph: oui</option>
+                                <option value="no">Graph: non</option>
+                            </select>
+                        </div>
+                        <div class="channel-setting-row">
+                            <span class="channel-key">B1</span>
+                            <input type="text" id="cfg-b1-name" value="Canal B1" aria-label="Nom canal B1">
+                            <select id="cfg-b1-type" aria-label="Type canal B1">
+                                <option value="unused">Non utilisé</option>
+                                <option value="consumption">Consommation</option>
+                                <option value="edf_total">Consommation totale EDF</option>
+                                <option value="generator">Générateur</option>
+                            </select>
+                            <select id="cfg-b1-graph" aria-label="Afficher canal B1 sur le graphe">
+                                <option value="yes">Graph: oui</option>
+                                <option value="no">Graph: non</option>
+                            </select>
+                        </div>
+                        <div class="channel-setting-row">
+                            <span class="channel-key">C1</span>
+                            <input type="text" id="cfg-c1-name" value="Canal C1" aria-label="Nom canal C1">
+                            <select id="cfg-c1-type" aria-label="Type canal C1">
+                                <option value="unused">Non utilisé</option>
+                                <option value="consumption">Consommation</option>
+                                <option value="edf_total">Consommation totale EDF</option>
+                                <option value="generator">Générateur</option>
+                            </select>
+                            <select id="cfg-c1-graph" aria-label="Afficher canal C1 sur le graphe">
+                                <option value="yes">Graph: oui</option>
+                                <option value="no">Graph: non</option>
+                            </select>
+                        </div>
+                        <div class="channel-setting-row">
+                            <span class="channel-key">A2</span>
+                            <input type="text" id="cfg-a2-name" value="Canal A2" aria-label="Nom canal A2">
+                            <select id="cfg-a2-type" aria-label="Type canal A2">
+                                <option value="unused">Non utilisé</option>
+                                <option value="consumption">Consommation</option>
+                                <option value="edf_total">Consommation totale EDF</option>
+                                <option value="generator">Générateur</option>
+                            </select>
+                            <select id="cfg-a2-graph" aria-label="Afficher canal A2 sur le graphe">
+                                <option value="yes">Graph: oui</option>
+                                <option value="no">Graph: non</option>
+                            </select>
+                        </div>
+                        <div class="channel-setting-row">
+                            <span class="channel-key">B2</span>
+                            <input type="text" id="cfg-b2-name" value="Canal B2" aria-label="Nom canal B2">
+                            <select id="cfg-b2-type" aria-label="Type canal B2">
+                                <option value="unused">Non utilisé</option>
+                                <option value="consumption">Consommation</option>
+                                <option value="edf_total">Consommation totale EDF</option>
+                                <option value="generator">Générateur</option>
+                            </select>
+                            <select id="cfg-b2-graph" aria-label="Afficher canal B2 sur le graphe">
+                                <option value="yes">Graph: oui</option>
+                                <option value="no">Graph: non</option>
+                            </select>
+                        </div>
+                        <div class="channel-setting-row">
+                            <span class="channel-key">C2</span>
+                            <input type="text" id="cfg-c2-name" value="Canal C2" aria-label="Nom canal C2">
+                            <select id="cfg-c2-type" aria-label="Type canal C2">
+                                <option value="unused">Non utilisé</option>
+                                <option value="consumption">Consommation</option>
+                                <option value="edf_total">Consommation totale EDF</option>
+                                <option value="generator">Générateur</option>
+                            </select>
+                            <select id="cfg-c2-graph" aria-label="Afficher canal C2 sur le graphe">
+                                <option value="yes">Graph: oui</option>
+                                <option value="no">Graph: non</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <button id="save-settings" class="btn-primary">Enregistrer</button>
+            </div>
+
+            <div class="settings-group">
+                <h2>État du système</h2>
+                <div class="system-info">
+                    <div class="info-row">
+                        <span class="label">Serveur:</span>
+                        <span id="sys-server" class="value">--</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Capteur:</span>
+                        <span id="sys-sensor" class="value">--</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Dernier relevé:</span>
+                        <span id="sys-last-ts" class="value">--</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Mode EM06:</span>
+                        <span id="sys-mode" class="value">--</span>
+                    </div>
+                    <div class="info-row" id="last-error-row" style="display:none;">
+                        <span class="label error">Dernier erreur:</span>
+                        <span id="sys-error" class="value error">--</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <p>Auto-rafraîchissement: <span id="footer-interval">3</span>s | Dernière mise à jour: <span id="footer-time">--:--:--</span></p>
+    </footer>
+
+    <!-- Chart.js Library -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+    
+    <!-- App Script with cache busting -->
+    <script>
+        (function () {
+            const cacheBust = Date.now().toString();
+            const style = document.getElementById('app-style');
+            if (style) {
+                style.href = `/css/style.css?v=${cacheBust}`;
+            }
+
+            const appScript = document.createElement('script');
+            appScript.src = `/js/app.js?v=${cacheBust}`;
+            document.body.appendChild(appScript);
+        })();
+    </script>
+</body>
+</html>

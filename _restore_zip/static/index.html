@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#1a5f7a">
+    <title>Datalogueur EM06</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <h1>⚡ Datalogueur EM06</h1>
+            <div class="header-status">
+                <span id="status-indicator" class="status-dot"></span>
+                <span id="status-text">Vérification...</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Navigation -->
+    <nav class="nav-tabs">
+        <button class="nav-tab active" data-page="dashboard">
+            <span class="icon">📊</span>
+            <span>Dashboard</span>
+        </button>
+        <button class="nav-tab" data-page="history">
+            <span class="icon">📈</span>
+            <span>Historique</span>
+        </button>
+        <button class="nav-tab" data-page="settings">
+            <span class="icon">⚙️</span>
+            <span>Paramètres</span>
+        </button>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="container">
+        <!-- Dashboard Page -->
+        <section id="dashboard" class="page active">
+            <!-- Total Summary Cards -->
+            <div class="summary-grid">
+                <div class="summary-card">
+                    <div class="summary-label">Production Total</div>
+                    <div class="summary-value" id="total-production">-- kWh</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-label">Consommation Total</div>
+                    <div class="summary-value" id="total-consumption">-- kWh</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-label">Tension</div>
+                    <div class="summary-value" id="voltage-value">-- V</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-label">Fréquence</div>
+                    <div class="summary-value" id="frequency-value">-- Hz</div>
+                </div>
+            </div>
+
+            <!-- 6 Channels Grid (3-phase with 2 meters) -->
+            <div class="channels-container">
+                <h2>Canaux triphasés (6 compteurs)</h2>
+                <div class="channels-grid">
+                    <!-- Channel A1 -->
+                    <div class="channel-card">
+                        <div class="channel-header" id="a1-name">Canal A1</div>
+                        <div class="channel-type" id="a1-type">Type: --</div>
+                        <div class="channel-row">
+                            <span class="channel-label">Production:</span>
+                            <span class="channel-value" id="a1-prod">-- kWh</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Consommation:</span>
+                            <span class="channel-value" id="a1-cons">-- kWh</span>
+                        </div>
+                    </div>
+
+                    <!-- Channel B1 -->
+                    <div class="channel-card">
+                        <div class="channel-header" id="b1-name">Canal B1</div>
+                        <div class="channel-type" id="b1-type">Type: --</div>
+                        <div class="channel-row">
+                            <span class="channel-label">Production:</span>
+                            <span class="channel-value" id="b1-prod">-- kWh</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Consommation:</span>
+                            <span class="channel-value" id="b1-cons">-- kWh</span>
+                        </div>
+                    </div>
+
+                    <!-- Channel C1 -->
+                    <div class="channel-card">
+                        <div class="channel-header" id="c1-name">Canal C1</div>
+                        <div class="channel-type" id="c1-type">Type: --</div>
+                        <div class="channel-row">
+                            <span class="channel-label">Production:</span>
+                            <span class="channel-value" id="c1-prod">-- kWh</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Consommation:</span>
+                            <span class="channel-value" id="c1-cons">-- kWh</span>
+                        </div>
+                    </div>
+
+                    <!-- Channel A2 -->
+                    <div class="channel-card">
+                        <div class="channel-header" id="a2-name">Canal A2</div>
+                        <div class="channel-type" id="a2-type">Type: --</div>
+                        <div class="channel-row">
+                            <span class="channel-label">Production:</span>
+                            <span class="channel-value" id="a2-prod">-- kWh</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Consommation:</span>
+                            <span class="channel-value" id="a2-cons">-- kWh</span>
+                        </div>
+                    </div>
+
+                    <!-- Channel B2 -->
+                    <div class="channel-card">
+                        <div class="channel-header" id="b2-name">Canal B2</div>
+                        <div class="channel-type" id="b2-type">Type: --</div>
+                        <div class="channel-row">
+                            <span class="channel-label">Production:</span>
+                            <span class="channel-value" id="b2-prod">-- kWh</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Consommation:</span>
+                            <span class="channel-value" id="b2-cons">-- kWh</span>
+                        </div>
+                    </div>
+
+                    <!-- Channel C2 -->
+                    <div class="channel-card">
+                        <div class="channel-header" id="c2-name">Canal C2</div>
+                        <div class="channel-type" id="c2-type">Type: --</div>
+                        <div class="channel-row">
+                            <span class="channel-label">Production:</span>
+                            <span class="channel-value" id="c2-prod">-- kWh</span>
+                        </div>
+                        <div class="channel-row">
+                            <span class="channel-label">Consommation:</span>
+                            <span class="channel-value" id="c2-cons">-- kWh</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="billing-container">
+                <h2>Estimation économique</h2>
+                <div class="billing-grid">
+                    <div class="billing-item">
+                        <span class="billing-label">Conso nette vers EDF</span>
+                        <span class="billing-value" id="billing-net-grid">-- kWh</span>
+                    </div>
+                    <div class="billing-item">
+                        <span class="billing-label">Facture estimée</span>
+                        <span class="billing-value" id="billing-estimated-cost">-- EUR</span>
+                    </div>
+                    <div class="billing-item">
+                        <span class="billing-label">Valorisation revente</span>
+                        <span class="billing-value" id="billing-feed-in-value">-- EUR</span>
+                    </div>
+                </div>
+                <p id="billing-note" class="billing-note">--</p>
+            </div>
+
+            <!-- Consumption vs Production Chart -->
+            <div class="chart-container">
+                <div class="chart-header-row">
+                    <h2>Production vs Consommation (24h)</h2>
+                    <div class="chart-selector-wrap">
+                        <label for="chart-channel-select">Départ:</label>
+                        <select id="chart-channel-select" aria-label="Sélecteur du départ pour le graphique">
+                            <option value="total">Total</option>
+                        </select>
+                    </div>
+                </div>
+                <canvas id="trend-chart"></canvas>
+            </div>
+
+            <!-- Additional Info -->
+            <div class="info-section">
+                <h3>Informations système</h3>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <span class="info-label">État capteur:</span>
+                        <span id="sensor-state" class="info-value">Vérification...</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Dernier relevé:</span>
+                        <span id="last-update" class="info-value">--:--:--</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Mode collecte:</span>
+                        <span id="em06-mode" class="info-value">--</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Facteur de puissance:</span>
+                        <span id="power-factor-value" class="info-value">--</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- History Page -->
+        <section id="history" class="page">
+            <div class="history-controls">
+                <div class="control-group">
+                    <label for="from-date">De:</label>
+                    <input type="date" id="from-date">
+                </div>
+                <div class="control-group">
+                    <label for="to-date">À:</label>
+                    <input type="date" id="to-date">
+                </div>
+                <button id="apply-filter" class="btn-primary">Appliquer</button>
+            </div>
+
+            <div class="history-table-container">
+                <table id="history-table" class="history-table">
+                    <thead>
+                        <tr>
+                            <th>Heure</th>
+                            <th>Prod Total (kWh)</th>
+                            <th>Cons Total (kWh)</th>
+                            <th>Tension (V)</th>
+                            <th>Facteur Puissance</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-tbody">
+                        <tr>
+                            <td colspan="5" class="loading">Chargement...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="pagination">
+                <button id="prev-page" class="btn-secondary">← Précédent</button>
+                <span id="page-info">--</span>
+                <button id="next-page" class="btn-secondary">Suivant →</button>
+            </div>
+        </section>
+
+        <!-- Settings Page -->
+        <section id="settings" class="page">
+            <div class="settings-group">
+                <h2>Configuration</h2>
+                
+                <div class="setting-item">
+                    <label for="refresh-interval">Intervalle de rafraîchissement:</label>
+                    <div class="setting-input">
+                        <input type="number" id="refresh-interval" min="1" max="60" value="3">
+                        <span>secondes</span>
+                    </div>
+                </div>
+
+                <div class="setting-item">
+                    <label for="chart-hours">Données du graphique:</label>
+                    <div class="setting-input">
+                        <input type="number" id="chart-hours" min="1" max="720" value="24">
+                        <span>heures</span>
+                    </div>
+                </div>
+
+                <div class="setting-item">
+                    <label for="buy-price-kwh">Prix achat électricité:</label>
+                    <div class="setting-input">
+                        <input type="number" id="buy-price-kwh" min="0" step="0.001" value="0.25">
+                        <span>EUR/kWh</span>
+                    </div>
+                </div>
+
+                <div class="setting-item">
+                    <label for="has-resale-contract">Contrat de revente établi:</label>
+                    <div class="setting-input">
+                        <input type="checkbox" id="has-resale-contract">
+                        <span>Activer la valorisation revente</span>
+                    </div>
+                </div>
+
+                <div class="setting-item">
+                    <label for="sell-price-kwh">Tarif rachat injecté:</label>
+                    <div class="setting-input">
+                        <input type="number" id="sell-price-kwh" min="0" step="0.001" value="0.011">
+                        <span>EUR/kWh</span>
+                    </div>
+                </div>
+
+                <div class="setting-item">
+                    <label>Définition des canaux (Nom, Type):</label>
+                    <div class="channels-settings-grid">
+                        <div class="channel-setting-row">
+                            <span class="channel-key">A1</span>
+                            <input type="text" id="cfg-a1-name" value="Canal A1" aria-label="Nom canal A1">
+                            <select id="cfg-a1-type" aria-label="Type canal A1">
+                                <option value="unused">Non utilisé</option>
+                                <option value="consumption">Consommation</option>
+                                <option value="edf_total">Consommation totale EDF</option>
+                                <option value="generator">Générateur</option>
+                            </select>
+                        </div>
+                        <div class="channel-setting-row">
+                            <span class="channel-key">B1</span>
+                            <input type="text" id="cfg-b1-name" value="Canal B1" aria-label="Nom canal B1">
+                            <select id="cfg-b1-type" aria-label="Type canal B1">
+                                <option value="unused">Non utilisé</option>
+                                <option value="consumption">Consommation</option>
+                                <option value="edf_total">Consommation totale EDF</option>
+                                <option value="generator">Générateur</option>
+                            </select>
+                        </div>
+                        <div class="channel-setting-row">
+                            <span class="channel-key">C1</span>
+                            <input type="text" id="cfg-c1-name" value="Canal C1" aria-label="Nom canal C1">
+                            <select id="cfg-c1-type" aria-label="Type canal C1">
+                                <option value="unused">Non utilisé</option>
+                                <option value="consumption">Consommation</option>
+                                <option value="edf_total">Consommation totale EDF</option>
+                                <option value="generator">Générateur</option>
+                            </select>
+                        </div>
+                        <div class="channel-setting-row">
+                            <span class="channel-key">A2</span>
+                            <input type="text" id="cfg-a2-name" value="Canal A2" aria-label="Nom canal A2">
+                            <select id="cfg-a2-type" aria-label="Type canal A2">
+                                <option value="unused">Non utilisé</option>
+                                <option value="consumption">Consommation</option>
+                                <option value="edf_total">Consommation totale EDF</option>
+                                <option value="generator">Générateur</option>
+                            </select>
+                        </div>
+                        <div class="channel-setting-row">
+                            <span class="channel-key">B2</span>
+                            <input type="text" id="cfg-b2-name" value="Canal B2" aria-label="Nom canal B2">
+                            <select id="cfg-b2-type" aria-label="Type canal B2">
+                                <option value="unused">Non utilisé</option>
+                                <option value="consumption">Consommation</option>
+                                <option value="edf_total">Consommation totale EDF</option>
+                                <option value="generator">Générateur</option>
+                            </select>
+                        </div>
+                        <div class="channel-setting-row">
+                            <span class="channel-key">C2</span>
+                            <input type="text" id="cfg-c2-name" value="Canal C2" aria-label="Nom canal C2">
+                            <select id="cfg-c2-type" aria-label="Type canal C2">
+                                <option value="unused">Non utilisé</option>
+                                <option value="consumption">Consommation</option>
+                                <option value="edf_total">Consommation totale EDF</option>
+                                <option value="generator">Générateur</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <button id="save-settings" class="btn-primary">Enregistrer</button>
+            </div>
+
+            <div class="settings-group">
+                <h2>État du système</h2>
+                <div class="system-info">
+                    <div class="info-row">
+                        <span class="label">Serveur:</span>
+                        <span id="sys-server" class="value">--</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Capteur:</span>
+                        <span id="sys-sensor" class="value">--</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Dernier relevé:</span>
+                        <span id="sys-last-ts" class="value">--</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Mode EM06:</span>
+                        <span id="sys-mode" class="value">--</span>
+                    </div>
+                    <div class="info-row" id="last-error-row" style="display:none;">
+                        <span class="label error">Dernier erreur:</span>
+                        <span id="sys-error" class="value error">--</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <p>Auto-rafraîchissement: <span id="footer-interval">3</span>s | Dernière mise à jour: <span id="footer-time">--:--:--</span></p>
+    </footer>
+
+    <!-- Chart.js Library -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+    
+    <!-- App Script -->
+    <script src="/js/app.js"></script>
+</body>
+</html>

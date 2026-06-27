@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  wireshark-capture:
+    build:
+      context: .
+      dockerfile: Dockerfile.wireshark
+    container_name: wireshark-capture
+    
+    # IMPORTANT: Mode host network pour voir les packets locaux
+    network_mode: host
+    
+    # Capacités Linux requises pour capturer les packets
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    
+    # Volume pour sauvegarder la capture
+    volumes:
+      - ./captures:/captures
+    
+    # Relancer le conteneur si erreur
+    restart: on-failure
+    
+    # Pour terminer après X minutes (optionnel, dés-commenter si voulu)
+    # command: bash -c "tshark -i eth0 -f 'tcp port 80 and dst 192.168.1.27' -w /captures/capture.pcap -a duration:300"
+
+  wireshark-parser:
+    # Conteneur optionnel pour parser le .pcap après capture
+    image: debian:bookworm-slim
+    container_name: wireshark-parser
+    depends_on:
+      - wireshark-capture
+    
+    volumes:
+      - ./captures:/captures
+    
+    # Attendre la capture et parser le fichier
+    command: bash -c "echo 'Attendre 60s puis parser...'; sleep 60; apt-get update && apt-get install -y tshark jq; tshark -r /captures/capture.pcap -Y 'http.request.method == \"POST\"' -T json | jq . > /captures/parsed.json"

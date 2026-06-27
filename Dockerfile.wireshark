@@ -1,0 +1,16 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    wireshark-common \
+    tshark \
+    curl \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Créer un utilisateur non-root pour tshark
+RUN usermod -a -G wireshark root
+
+WORKDIR /captures
+
+# Capture les packets POST vers 192.168.1.27 en format JSON
+ENTRYPOINT ["tshark", "-i", "eth0", "-f", "tcp port 80 and dst 192.168.1.27", "-w", "/captures/capture.pcap"]

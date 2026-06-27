@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Virtual environments
+.venv/
+.venv-tools/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+!.env.dev.example
+!.env.prod.example
+
+# Runtime artifacts
+data/*.db
+data/*.csv
+data/*.json
+captures/
+*.log
+
+# Local sensitive dumps and captures
+devices.json
+snapshot.json
+tinytuya.json
+tuya-raw.json
+
+# Local archives / exports
+datalogueur_useful_files.zip
+measurements_all.csv
+system_events_all.csv
+c1_canal_C1_puissance_25mn.csv
