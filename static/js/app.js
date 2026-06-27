@@ -20,6 +20,11 @@ const CONFIG = {
     SELL_PRICE_KWH: 0.011,
     HAS_RESALE_CONTRACT: false,
     UNIFIED_CHART_MODE: 'power_temp',
+    GRAPH_SERIES: {
+        consumption: true,
+        temperature: true,
+        humidity: true,
+    },
     SENSORS: {},
     CHANNELS: {
         a1: { name: 'Canal A1', type: 'unused', graph: true },
@@ -64,7 +69,7 @@ function startApp() {
         initializeNavigation();
         initializeDatepickers();
         initializeChartContainer();
-        initializeUnifiedChartControls();
+        initializeGraphSeriesControls();
         initializeExpandableChannels();
         loadSettings();
         updateAllData();
@@ -141,6 +146,7 @@ function getSensorConfig(sensorKey) {
     return {
         name: typeof saved.name === 'string' ? saved.name.trim() : '',
         type: saved.type === 'exterieur' ? 'exterieur' : 'interieur',
+        graph: typeof saved.graph === 'boolean' ? saved.graph : true,
     };
 }
 
@@ -348,14 +354,32 @@ function formatChartTime(value) {
     return date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 }
 
-function initializeUnifiedChartControls() {
-    const modeSelect = document.getElementById('unified-chart-mode');
-    if (!modeSelect) return;
-    modeSelect.value = CONFIG.UNIFIED_CHART_MODE;
-    modeSelect.addEventListener('change', () => {
-        CONFIG.UNIFIED_CHART_MODE = modeSelect.value === 'temp_humidity' ? 'temp_humidity' : 'power_temp';
+function applyGraphSeriesControlValues() {
+    const consumptionInput = document.getElementById('graph-show-consumption');
+    const temperatureInput = document.getElementById('graph-show-temperature');
+    const humidityInput = document.getElementById('graph-show-humidity');
+    if (consumptionInput) consumptionInput.checked = CONFIG.GRAPH_SERIES.consumption !== false;
+    if (temperatureInput) temperatureInput.checked = CONFIG.GRAPH_SERIES.temperature !== false;
+    if (humidityInput) humidityInput.checked = CONFIG.GRAPH_SERIES.humidity !== false;
+}
+
+function initializeGraphSeriesControls() {
+    const consumptionInput = document.getElementById('graph-show-consumption');
+    const temperatureInput = document.getElementById('graph-show-temperature');
+    const humidityInput = document.getElementById('graph-show-humidity');
+
+    applyGraphSeriesControlValues();
+
+    const onChange = () => {
+        CONFIG.GRAPH_SERIES.consumption = !consumptionInput || consumptionInput.checked;
+        CONFIG.GRAPH_SERIES.temperature = !temperatureInput || temperatureInput.checked;
+        CONFIG.GRAPH_SERIES.humidity = !humidityInput || humidityInput.checked;
         renderTrendChart();
-    });
+    };
+
+    if (consumptionInput) consumptionInput.addEventListener('change', onChange);
+    if (temperatureInput) temperatureInput.addEventListener('change', onChange);
+    if (humidityInput) humidityInput.addEventListener('change', onChange);
 }
 
 function getFixedDailySlots() {
@@ -671,24 +695,49 @@ function renderTrendChart() {
 
     const { slots } = getFixedDailySlots();
     const labels = slots.map((slot) => slot.label);
-    const mode = CONFIG.UNIFIED_CHART_MODE === 'temp_humidity' ? 'temp_humidity' : 'power_temp';
     const datasets = [];
+    const showConsumption = CONFIG.GRAPH_SERIES.consumption !== false;
+    const showTemperature = CONFIG.GRAPH_SERIES.temperature !== false;
+    const showHumidity = CONFIG.GRAPH_SERIES.humidity !== false;
+    syncSelectedGraphChannels();
 
-    if (mode === 'power_temp') {
-        const powerData = aggregateByDailySlots(appState.powerSeries, (point) => {
-            const totals = getBusinessTotals(point);
-            return totals.consumptionW;
-        });
-        datasets.push({
-            label: 'Consommation electrique (W)',
-            data: powerData,
-            borderColor: '#dc2626',
-            backgroundColor: 'transparent',
-            borderWidth: 2.5,
-            tension: 0.25,
-            spanGaps: true,
-            pointRadius: 1.5,
-            yAxisID: 'yPower',
+    if (showConsumption) {
+        if (appState.selectedGraphChannels.has('total')) {
+            const powerData = aggregateByDailySlots(appState.powerSeries, (point) => {
+                const totals = getBusinessTotals(point);
+                return totals.consumptionW;
+            });
+            datasets.push({
+                label: 'Total consommation electrique (W)',
+                data: powerData,
+                borderColor: '#dc2626',
+                backgroundColor: 'transparent',
+                borderWidth: 2.5,
+                tension: 0.25,
+                spanGaps: true,
+                pointRadius: 1.5,
+                yAxisID: 'yPower',
+            });
+        }
+
+        getUsedChannelKeys().forEach((channelKey) => {
+            if (getChannelConfig(channelKey).graph === false) return;
+            if (!appState.selectedGraphChannels.has(channelKey)) return;
+            const cfg = getChannelConfig(channelKey);
+            const series = aggregateByDailySlots(appState.powerSeries, (point) => point[`${channelKey}_consumption_w`]);
+            if (!series.some((v) => Number.isFinite(v))) return;
+
+            datasets.push({
+                label: `${cfg.name} - Consommation (W)`,
+                data: series,
+                borderColor: getLineColor(channelKey, 'consumption'),
+                backgroundColor: 'transparent',
+                borderWidth: 1.8,
+                tension: 0.25,
+                spanGaps: true,
+                pointRadius: 1.2,
+                yAxisID: 'yPower',
+            });
         });
     }
 
@@ -703,28 +752,33 @@ function renderTrendChart() {
 
     const palette = ['#0ea5e9', '#16a34a', '#f97316', '#a855f7', '#e11d48', '#14b8a6'];
     Array.from(bySensor.keys()).sort().forEach((sensorKey, index) => {
+        const cfg = getSensorConfig(sensorKey);
+        if (cfg.graph === false) return;
+
         const sensorRows = bySensor.get(sensorKey);
         const sensorName = getSensorDisplayName(sensorKey);
         const sensorType = getSensorTypeLabel(sensorKey);
         const color = palette[index % palette.length];
 
-        const tempLabel = `${sensorName} (${sensorType}) - Temp (deg C)`;
-        const tempData = aggregateByDailySlots(sensorRows, (row) => row.temperature_c);
-        if (tempData.some((v) => Number.isFinite(v))) {
-            datasets.push({
-                label: tempLabel,
-                data: tempData,
-                borderColor: color,
-                backgroundColor: 'transparent',
-                borderWidth: 2,
-                tension: 0.25,
-                spanGaps: true,
-                pointRadius: 1.5,
-                yAxisID: 'yTemp',
-            });
+        if (showTemperature) {
+            const tempLabel = `${sensorName} (${sensorType}) - Temp (deg C)`;
+            const tempData = aggregateByDailySlots(sensorRows, (row) => row.temperature_c);
+            if (tempData.some((v) => Number.isFinite(v))) {
+                datasets.push({
+                    label: tempLabel,
+                    data: tempData,
+                    borderColor: color,
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    tension: 0.25,
+                    spanGaps: true,
+                    pointRadius: 1.5,
+                    yAxisID: 'yTemp',
+                });
+            }
         }
 
-        if (mode === 'temp_humidity') {
+        if (showHumidity) {
             const humLabel = `${sensorName} (${sensorType}) - Hum (%)`;
             const humData = aggregateByDailySlots(sensorRows, (row) => row.humidity_pct);
             if (humData.some((v) => Number.isFinite(v))) {
@@ -745,6 +799,10 @@ function renderTrendChart() {
     });
 
     if (datasets.length === 0) return;
+
+    const hasPowerDatasets = datasets.some((dataset) => dataset.yAxisID === 'yPower');
+    const hasTempDatasets = datasets.some((dataset) => dataset.yAxisID === 'yTemp');
+    const hasHumDatasets = datasets.some((dataset) => dataset.yAxisID === 'yHum');
 
     datasets.forEach((dataset) => {
         if (appState.unifiedHiddenDatasets[dataset.label] === true) {
@@ -790,33 +848,34 @@ function renderTrendChart() {
                     },
                 },
                 yPower: {
-                    display: mode === 'power_temp',
+                    display: hasPowerDatasets,
                     type: 'linear',
                     position: 'left',
                     title: {
-                        display: mode === 'power_temp',
+                        display: hasPowerDatasets,
                         text: 'Puissance (W)',
                     },
                 },
                 yTemp: {
+                    display: hasTempDatasets,
                     type: 'linear',
-                    position: mode === 'power_temp' ? 'right' : 'left',
+                    position: hasPowerDatasets ? 'right' : 'left',
                     title: {
-                        display: true,
+                        display: hasTempDatasets,
                         text: 'Temperature (deg C)',
                     },
                     grid: {
-                        drawOnChartArea: mode !== 'power_temp',
+                        drawOnChartArea: !hasPowerDatasets,
                     },
                 },
                 yHum: {
-                    display: mode === 'temp_humidity',
+                    display: hasHumDatasets,
                     type: 'linear',
                     position: 'right',
                     suggestedMin: 0,
                     suggestedMax: 100,
                     title: {
-                        display: mode === 'temp_humidity',
+                        display: hasHumDatasets,
                         text: 'Humidite (%)',
                     },
                     grid: {
@@ -891,9 +950,19 @@ function renderSensorSettingsRows() {
         ].join('');
         typeSelect.value = cfg.type;
 
+        const graphSelect = document.createElement('select');
+        graphSelect.className = 'sensor-graph-select';
+        graphSelect.dataset.sensorKey = sensorKey;
+        graphSelect.innerHTML = [
+            '<option value="yes">Graph: oui</option>',
+            '<option value="no">Graph: non</option>',
+        ].join('');
+        graphSelect.value = cfg.graph === false ? 'no' : 'yes';
+
         row.appendChild(keyNode);
         row.appendChild(nameInput);
         row.appendChild(typeSelect);
+        row.appendChild(graphSelect);
         grid.appendChild(row);
     });
 }
@@ -1454,6 +1523,13 @@ function loadSettings() {
         CONFIG.SELL_PRICE_KWH = settings.sellPriceKwh ?? 0.011;
         CONFIG.HAS_RESALE_CONTRACT = Boolean(settings.hasResaleContract);
         CONFIG.UNIFIED_CHART_MODE = settings.unifiedChartMode === 'temp_humidity' ? 'temp_humidity' : 'power_temp';
+        if (settings.graphSeries && typeof settings.graphSeries === 'object') {
+            CONFIG.GRAPH_SERIES = {
+                consumption: settings.graphSeries.consumption !== false,
+                temperature: settings.graphSeries.temperature !== false,
+                humidity: settings.graphSeries.humidity !== false,
+            };
+        }
         appState.unifiedHiddenDatasets =
             settings.unifiedHiddenDatasets && typeof settings.unifiedHiddenDatasets === 'object'
                 ? settings.unifiedHiddenDatasets
@@ -1481,6 +1557,7 @@ function loadSettings() {
                 mergedSensors[key] = {
                     name: typeof row.name === 'string' ? row.name : '',
                     type: row.type === 'exterieur' ? 'exterieur' : 'interieur',
+                    graph: typeof row.graph === 'boolean' ? row.graph : true,
                 };
             });
             CONFIG.SENSORS = mergedSensors;
@@ -1506,10 +1583,9 @@ function loadSettings() {
     }
 
     applyChannelSettingsToForm();
+    applyGraphSeriesControlValues();
     refreshChartFilters();
     renderSensorSettingsRows();
-    const modeSelect = document.getElementById('unified-chart-mode');
-    if (modeSelect) modeSelect.value = CONFIG.UNIFIED_CHART_MODE;
 
     const saveButton = document.getElementById('save-settings');
     if (saveButton) {
@@ -1567,10 +1643,13 @@ function saveSettings() {
         const sensorKey = String(input.dataset.sensorKey || '').trim();
         if (!sensorKey) return;
         const typeSelect = document.querySelector(`.sensor-type-select[data-sensor-key="${sensorKey}"]`);
+        const graphSelect = document.querySelector(`.sensor-graph-select[data-sensor-key="${sensorKey}"]`);
         const typeValue = typeSelect ? typeSelect.value : 'interieur';
+        const graphValue = graphSelect ? graphSelect.value : 'yes';
         sensors[sensorKey] = {
             name: String(input.value || '').trim(),
             type: typeValue === 'exterieur' ? 'exterieur' : 'interieur',
+            graph: graphValue !== 'no',
         };
     });
 
@@ -1591,6 +1670,7 @@ function saveSettings() {
             sellPriceKwh: CONFIG.SELL_PRICE_KWH,
             hasResaleContract: CONFIG.HAS_RESALE_CONTRACT,
             unifiedChartMode: CONFIG.UNIFIED_CHART_MODE,
+            graphSeries: CONFIG.GRAPH_SERIES,
             unifiedHiddenDatasets: appState.unifiedHiddenDatasets,
             channels: CONFIG.CHANNELS,
             sensors: CONFIG.SENSORS,

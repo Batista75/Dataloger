@@ -653,7 +653,7 @@ body {
 
 .sensor-setting-row {
     display: grid;
-    grid-template-columns: minmax(180px, 1.2fr) minmax(140px, 1fr) minmax(150px, 1fr);
+    grid-template-columns: minmax(180px, 1.2fr) minmax(140px, 1fr) minmax(150px, 1fr) minmax(130px, 0.9fr);
     gap: 0.5rem;
     align-items: center;
 }

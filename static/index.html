@@ -216,15 +216,15 @@
             <div class="chart-container">
                 <div class="chart-header-row">
                     <h2>Graphique unifie (journee)</h2>
-                    <div class="setting-input">
-                        <label for="unified-chart-mode">Mode:</label>
-                        <select id="unified-chart-mode" aria-label="Mode graphe unifie">
-                            <option value="power_temp">Consommation electrique + temperature</option>
-                            <option value="temp_humidity">Temperature + humidite</option>
-                        </select>
+                    <div class="chart-filters" id="graph-series-controls" aria-label="Series du graphe">
+                        <label class="chart-filter-item"><input type="checkbox" id="graph-show-consumption" checked> Consommation</label>
+                        <label class="chart-filter-item"><input type="checkbox" id="graph-show-temperature" checked> Temperature</label>
+                        <label class="chart-filter-item"><input type="checkbox" id="graph-show-humidity" checked> Humidite</label>
                     </div>
                 </div>
                 <div class="chart-legend-hint">Abscisse fixe de 00:00 a 23:45 (pas de 15 minutes).</div>
+                <div class="chart-legend-hint">Sondes electriques affichees:</div>
+                <div class="chart-filters" id="chart-filters" aria-label="Filtres sondes electriques"></div>
                 <canvas id="trend-chart"></canvas>
             </div>
 
@@ -428,7 +428,7 @@
                 </div>
 
                 <div class="setting-item">
-                    <label>Association des sondes temperature/humidite (Nom, Type):</label>
+                    <label>Association des sondes temperature/humidite (Nom, Type, Graph):</label>
                     <div id="sensor-settings-grid" class="sensors-settings-grid"></div>
                     <div class="setting-hint">Type disponible: sonde interieur ou sonde exterieur.</div>
                 </div>
