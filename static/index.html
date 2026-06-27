@@ -212,22 +212,20 @@
                 <p id="billing-note" class="billing-note">--</p>
             </div>
 
-            <!-- Instant power chart -->
+            <!-- Unified chart -->
             <div class="chart-container">
                 <div class="chart-header-row">
-                    <h2>Evolution instantanee en Watt (24h)</h2>
-                    <div id="chart-filters" class="chart-filters" aria-label="Filtre des departs"></div>
+                    <h2>Graphique unifie (journee)</h2>
+                    <div class="setting-input">
+                        <label for="unified-chart-mode">Mode:</label>
+                        <select id="unified-chart-mode" aria-label="Mode graphe unifie">
+                            <option value="power_temp">Consommation electrique + temperature</option>
+                            <option value="temp_humidity">Temperature + humidite</option>
+                        </select>
+                    </div>
                 </div>
-                <div class="chart-legend-hint">Cochez les departs utilises pour afficher uniquement les courbes voulues.</div>
+                <div class="chart-legend-hint">Abscisse fixe de 00:00 a 23:45 (pas de 15 minutes).</div>
                 <canvas id="trend-chart"></canvas>
-            </div>
-
-            <div class="chart-container">
-                <div class="chart-header-row">
-                    <h2>Evolution temperature / humidite (24h)</h2>
-                </div>
-                <div class="chart-legend-hint">Donnees issues de la collecte Tuya (historique CSV).</div>
-                <canvas id="climate-chart"></canvas>
             </div>
 
             <!-- Additional Info -->

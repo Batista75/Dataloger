@@ -19,6 +19,7 @@ const CONFIG = {
     BUY_PRICE_KWH: 0.25,
     SELL_PRICE_KWH: 0.011,
     HAS_RESALE_CONTRACT: false,
+    UNIFIED_CHART_MODE: 'power_temp',
     SENSORS: {},
     CHANNELS: {
         a1: { name: 'Canal A1', type: 'unused', graph: true },
@@ -49,6 +50,7 @@ let appState = {
     climateSeries: [],
     lastClimateRefreshMs: 0,
     knownSensors: new Set(),
+    unifiedHiddenDatasets: {},
 };
 
 // Initialize app
@@ -62,6 +64,7 @@ function startApp() {
         initializeNavigation();
         initializeDatepickers();
         initializeChartContainer();
+        initializeUnifiedChartControls();
         initializeExpandableChannels();
         loadSettings();
         updateAllData();
@@ -115,7 +118,21 @@ function getChannelConfig(key) {
 
 function getSensorKey(row) {
     if (!row || typeof row !== 'object') return '';
-    return String(row.device_mac || row.device_id || '').trim();
+    const mac = String(row.device_mac || '').trim();
+    if (mac) return mac;
+
+    const deviceId = String(row.device_id || '').trim();
+    if (!deviceId) return '';
+
+    const mapped = (appState.climateSeries || []).find((item) => {
+        if (!item || typeof item !== 'object') return false;
+        return String(item.device_id || '').trim() === deviceId && String(item.device_mac || '').trim();
+    });
+
+    if (mapped && mapped.device_mac) {
+        return String(mapped.device_mac).trim();
+    }
+    return deviceId;
 }
 
 function getSensorConfig(sensorKey) {
@@ -140,10 +157,6 @@ function getSensorTypeLabel(sensorKey) {
 
 function getKnownSensorKeys() {
     const keys = new Set();
-
-    Object.keys(CONFIG.SENSORS || {}).forEach((key) => {
-        if (key) keys.add(key);
-    });
 
     (appState.climateSeries || []).forEach((row) => {
         const key = getSensorKey(row);
@@ -333,6 +346,52 @@ function parseTimestampMs(value) {
 function formatChartTime(value) {
     const date = new Date(value);
     return date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function initializeUnifiedChartControls() {
+    const modeSelect = document.getElementById('unified-chart-mode');
+    if (!modeSelect) return;
+    modeSelect.value = CONFIG.UNIFIED_CHART_MODE;
+    modeSelect.addEventListener('change', () => {
+        CONFIG.UNIFIED_CHART_MODE = modeSelect.value === 'temp_humidity' ? 'temp_humidity' : 'power_temp';
+        renderTrendChart();
+    });
+}
+
+function getFixedDailySlots() {
+    const now = new Date();
+    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const slotMs = 15 * 60 * 1000;
+    const slots = [];
+
+    for (let i = 0; i < 96; i += 1) {
+        const ts = new Date(dayStart.getTime() + i * slotMs);
+        const hh = String(ts.getHours()).padStart(2, '0');
+        const mm = String(ts.getMinutes()).padStart(2, '0');
+        slots.push({ index: i, tsMs: ts.getTime(), label: `${hh}:${mm}` });
+    }
+
+    return { dayStartMs: dayStart.getTime(), slotMs, slots };
+}
+
+function aggregateByDailySlots(rows, getValue) {
+    const { dayStartMs, slotMs, slots } = getFixedDailySlots();
+    const sums = new Array(slots.length).fill(0);
+    const counts = new Array(slots.length).fill(0);
+
+    (rows || []).forEach((row) => {
+        const ts = parseTimestampMs(row.ts_utc);
+        if (!Number.isFinite(ts)) return;
+        const idx = Math.floor((ts - dayStartMs) / slotMs);
+        if (idx < 0 || idx >= slots.length) return;
+
+        const value = Number(getValue(row));
+        if (!Number.isFinite(value)) return;
+        sums[idx] += value;
+        counts[idx] += 1;
+    });
+
+    return counts.map((count, idx) => (count > 0 ? sums[idx] / count : null));
 }
 
 function resamplePowerSeries(series, intervalMinutes, mode = 'average') {
@@ -607,61 +666,93 @@ async function refreshPowerAnalytics(force) {
 }
 
 function renderTrendChart() {
-    const series = appState.powerSeries;
-    if (!Array.isArray(series) || series.length === 0) return;
+    const canvas = document.getElementById('trend-chart');
+    if (!canvas) return;
 
-    const cutoff = Date.now() - CONFIG.CHART_HOURS * 3600 * 1000;
-    const windowed = series.filter((p) => parseTimestampMs(p.ts_utc) >= cutoff);
-    if (windowed.length === 0) return;
-
-    const chartSeries = prepareChartSeries(windowed);
-    if (chartSeries.length === 0) return;
-
-    const labels = chartSeries.map((p) => formatChartTime(p.ts_utc));
-
-    const selected = Array.from(appState.selectedGraphChannels);
+    const { slots } = getFixedDailySlots();
+    const labels = slots.map((slot) => slot.label);
+    const mode = CONFIG.UNIFIED_CHART_MODE === 'temp_humidity' ? 'temp_humidity' : 'power_temp';
     const datasets = [];
 
-    const appendChannelDataset = (key, label, cfg) => {
-        const isGenerator = cfg && cfg.type === 'generator';
-        datasets.push({
-            label: `${label} (W)`,
-            data: chartSeries.map((p) => {
-                const value = Number(p[`${key}_signed_w`]);
-                return Number.isFinite(value) ? value : null;
-            }),
-            borderColor: getLineColor(key, isGenerator ? 'production' : 'consumption'),
-            backgroundColor: 'transparent',
-            borderWidth: 2,
-            borderDash: isGenerator ? [8, 4] : [],
-            tension: 0.25,
-            fill: false,
+    if (mode === 'power_temp') {
+        const powerData = aggregateByDailySlots(appState.powerSeries, (point) => {
+            const totals = getBusinessTotals(point);
+            return totals.consumptionW;
         });
-    };
+        datasets.push({
+            label: 'Consommation electrique (W)',
+            data: powerData,
+            borderColor: '#dc2626',
+            backgroundColor: 'transparent',
+            borderWidth: 2.5,
+            tension: 0.25,
+            spanGaps: true,
+            pointRadius: 1.5,
+            yAxisID: 'yPower',
+        });
+    }
 
-    selected.forEach((key) => {
-        if (key === 'total') {
-            datasets.push({
-                label: 'Total consommation (W)',
-                data: chartSeries.map((p) => {
-                    const totals = getBusinessTotals(p);
-                    return Number.isFinite(totals.consumptionW) ? totals.consumptionW : null;
-                }),
-                borderColor: getLineColor('total', 'consumption'),
-                borderWidth: 2.5,
-                tension: 0.25,
-                fill: false,
-            });
-            return;
-        }
-
-        const cfg = getChannelConfig(key);
-        if (cfg.type === 'unused') return;
-        appendChannelDataset(key, cfg.name, cfg);
+    const climateSeries = Array.isArray(appState.climateSeries) ? appState.climateSeries : [];
+    const bySensor = new Map();
+    climateSeries.forEach((row) => {
+        const sensorKey = getSensorKey(row);
+        if (!sensorKey) return;
+        if (!bySensor.has(sensorKey)) bySensor.set(sensorKey, []);
+        bySensor.get(sensorKey).push(row);
     });
 
-    const ctx = document.getElementById('trend-chart').getContext('2d');
+    const palette = ['#0ea5e9', '#16a34a', '#f97316', '#a855f7', '#e11d48', '#14b8a6'];
+    Array.from(bySensor.keys()).sort().forEach((sensorKey, index) => {
+        const sensorRows = bySensor.get(sensorKey);
+        const sensorName = getSensorDisplayName(sensorKey);
+        const sensorType = getSensorTypeLabel(sensorKey);
+        const color = palette[index % palette.length];
 
+        const tempLabel = `${sensorName} (${sensorType}) - Temp (deg C)`;
+        const tempData = aggregateByDailySlots(sensorRows, (row) => row.temperature_c);
+        if (tempData.some((v) => Number.isFinite(v))) {
+            datasets.push({
+                label: tempLabel,
+                data: tempData,
+                borderColor: color,
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                tension: 0.25,
+                spanGaps: true,
+                pointRadius: 1.5,
+                yAxisID: 'yTemp',
+            });
+        }
+
+        if (mode === 'temp_humidity') {
+            const humLabel = `${sensorName} (${sensorType}) - Hum (%)`;
+            const humData = aggregateByDailySlots(sensorRows, (row) => row.humidity_pct);
+            if (humData.some((v) => Number.isFinite(v))) {
+                datasets.push({
+                    label: humLabel,
+                    data: humData,
+                    borderColor: color,
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    borderDash: [6, 4],
+                    tension: 0.25,
+                    spanGaps: true,
+                    pointRadius: 1.5,
+                    yAxisID: 'yHum',
+                });
+            }
+        }
+    });
+
+    if (datasets.length === 0) return;
+
+    datasets.forEach((dataset) => {
+        if (appState.unifiedHiddenDatasets[dataset.label] === true) {
+            dataset.hidden = true;
+        }
+    });
+
+    const ctx = canvas.getContext('2d');
     if (appState.chartInstance) {
         appState.chartInstance.destroy();
     }
@@ -674,7 +765,18 @@ function renderTrendChart() {
             maintainAspectRatio: true,
             interaction: { mode: 'index', intersect: false },
             plugins: {
-                legend: { position: 'top' },
+                legend: {
+                    position: 'top',
+                    onClick(legendEvent, legendItem, legend) {
+                        const chart = legend.chart;
+                        const dsIndex = legendItem.datasetIndex;
+                        const dsLabel = chart.data.datasets[dsIndex].label;
+                        const currentlyVisible = chart.isDatasetVisible(dsIndex);
+                        chart.setDatasetVisibility(dsIndex, !currentlyVisible);
+                        appState.unifiedHiddenDatasets[dsLabel] = currentlyVisible;
+                        chart.update();
+                    },
+                },
             },
             scales: {
                 x: {
@@ -683,23 +785,42 @@ function renderTrendChart() {
                         maxRotation: 0,
                         minRotation: 0,
                         callback(value, index) {
-                            const label = labels[index];
-                            return isHalfHourLabel(chartSeries[index].ts_utc) ? label : '';
-                        },
-                    },
-                    grid: {
-                        color(context) {
-                            return isQuarterHourLabel(chartSeries[context.index].ts_utc)
-                                ? 'rgba(148, 163, 184, 0.35)'
-                                : 'rgba(148, 163, 184, 0.08)';
+                            return index % 4 === 0 ? labels[index] : '';
                         },
                     },
                 },
-                y: {
-                    beginAtZero: false,
+                yPower: {
+                    display: mode === 'power_temp',
+                    type: 'linear',
+                    position: 'left',
+                    title: {
+                        display: mode === 'power_temp',
+                        text: 'Puissance (W)',
+                    },
+                },
+                yTemp: {
+                    type: 'linear',
+                    position: mode === 'power_temp' ? 'right' : 'left',
                     title: {
                         display: true,
-                        text: 'Puissance signee (W)',
+                        text: 'Temperature (deg C)',
+                    },
+                    grid: {
+                        drawOnChartArea: mode !== 'power_temp',
+                    },
+                },
+                yHum: {
+                    display: mode === 'temp_humidity',
+                    type: 'linear',
+                    position: 'right',
+                    suggestedMin: 0,
+                    suggestedMax: 100,
+                    title: {
+                        display: mode === 'temp_humidity',
+                        text: 'Humidite (%)',
+                    },
+                    grid: {
+                        drawOnChartArea: false,
                     },
                 },
             },
@@ -726,7 +847,7 @@ async function refreshClimateAnalytics(force) {
         appState.knownSensors = new Set(getKnownSensorKeys());
         appState.lastClimateRefreshMs = now;
 
-        renderClimateChart();
+        renderTrendChart();
         renderSensorSettingsRows();
         updateTemperatureCard();
     } catch (error) {
@@ -1332,6 +1453,11 @@ function loadSettings() {
         CONFIG.BUY_PRICE_KWH = settings.buyPriceKwh ?? 0.25;
         CONFIG.SELL_PRICE_KWH = settings.sellPriceKwh ?? 0.011;
         CONFIG.HAS_RESALE_CONTRACT = Boolean(settings.hasResaleContract);
+        CONFIG.UNIFIED_CHART_MODE = settings.unifiedChartMode === 'temp_humidity' ? 'temp_humidity' : 'power_temp';
+        appState.unifiedHiddenDatasets =
+            settings.unifiedHiddenDatasets && typeof settings.unifiedHiddenDatasets === 'object'
+                ? settings.unifiedHiddenDatasets
+                : {};
 
         if (settings.channels && typeof settings.channels === 'object') {
             const merged = {};
@@ -1382,6 +1508,8 @@ function loadSettings() {
     applyChannelSettingsToForm();
     refreshChartFilters();
     renderSensorSettingsRows();
+    const modeSelect = document.getElementById('unified-chart-mode');
+    if (modeSelect) modeSelect.value = CONFIG.UNIFIED_CHART_MODE;
 
     const saveButton = document.getElementById('save-settings');
     if (saveButton) {
@@ -1462,6 +1590,8 @@ function saveSettings() {
             buyPriceKwh: CONFIG.BUY_PRICE_KWH,
             sellPriceKwh: CONFIG.SELL_PRICE_KWH,
             hasResaleContract: CONFIG.HAS_RESALE_CONTRACT,
+            unifiedChartMode: CONFIG.UNIFIED_CHART_MODE,
+            unifiedHiddenDatasets: appState.unifiedHiddenDatasets,
             channels: CONFIG.CHANNELS,
             sensors: CONFIG.SENSORS,
         })
@@ -1472,7 +1602,6 @@ function saveSettings() {
     updateChannelInstantCards();
     updateTemperatureCard();
     renderTrendChart();
-    renderClimateChart();
 
     alert('Parametres enregistres');
 }

@@ -126,6 +126,21 @@ Integration API/UI:
 - L API expose `GET /api/temperature/latest` (source: `data/tuya_temperature_latest.json`).
 - L API expose aussi `GET /api/temperature/history` (source: `data/tuya_temperature_history.csv`) pour alimenter les graphes temperature/humidite.
 - Le dashboard affiche la temperature Tuya, l humidite, la MAC et l age de la mesure.
+- Le dashboard utilise un graphe unifie avec 2 modes:
+	- consommation electrique + temperature
+	- temperature + humidite
+- L abscisse du graphe est fixe de `00:00` a `23:45` (pas de 15 minutes).
+- Le masquage d une courbe via la legende est persistant entre les cycles de polling.
+
+Gestion des sondes dans Parametres:
+- Ajouter une sonde:
+	- Ajouter sa MAC dans `TUYA_TARGET_MACS` (liste separee par virgules), puis redemarrer `datalogger-tuya`.
+	- La sonde apparait automatiquement dans Parametres, section association des sondes.
+- Nommer et typer une sonde:
+	- Dans Parametres, renseigner le nom et le type (`sonde interieur` ou `sonde exterieur`), puis cliquer Enregistrer.
+- Supprimer une sonde:
+	- Retirer sa MAC de `TUYA_TARGET_MACS`, redemarrer `datalogger-tuya`.
+	- Optionnel: nettoyer l historique `data/tuya_temperature_history.csv` des anciennes lignes de cette sonde.
 
 Important:
 - En reel, garder `REFOSS_ALLOW_SIMULATED_FALLBACK=0`.
