@@ -646,6 +646,49 @@ body {
     background: #fff;
 }
 
+.sensors-settings-grid {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.sensor-setting-row {
+    display: grid;
+    grid-template-columns: minmax(180px, 1.2fr) minmax(140px, 1fr) minmax(150px, 1fr);
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.sensor-setting-key {
+    font-family: 'Courier New', monospace;
+    font-size: 0.82rem;
+    color: #334155;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 0.5rem 0.6rem;
+}
+
+.sensor-setting-row input,
+.sensor-setting-row select {
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    background: #fff;
+}
+
+.sensor-setting-empty {
+    color: #6b7280;
+    font-size: 0.9rem;
+    padding: 0.5rem 0;
+}
+
+.setting-hint {
+    margin-top: 0.5rem;
+    font-size: 0.85rem;
+    color: #6b7280;
+}
+
 .channel-card.hidden {
     display: none;
 }
@@ -789,6 +832,10 @@ body {
 
     .channel-setting-row {
         grid-template-columns: 44px 1fr;
+    }
+
+    .sensor-setting-row {
+        grid-template-columns: 1fr;
     }
 }
 

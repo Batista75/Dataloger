@@ -19,6 +19,7 @@ const CONFIG = {
     BUY_PRICE_KWH: 0.25,
     SELL_PRICE_KWH: 0.011,
     HAS_RESALE_CONTRACT: false,
+    SENSORS: {},
     CHANNELS: {
         a1: { name: 'Canal A1', type: 'unused', graph: true },
         b1: { name: 'Canal B1', type: 'unused', graph: true },
@@ -47,6 +48,7 @@ let appState = {
     latestTemperatureAgeSeconds: null,
     climateSeries: [],
     lastClimateRefreshMs: 0,
+    knownSensors: new Set(),
 };
 
 // Initialize app
@@ -109,6 +111,49 @@ function fmtTrend(current, previous) {
 function getChannelConfig(key) {
     const fallback = { name: `Canal ${key.toUpperCase()}`, type: 'consumption', graph: true };
     return { ...fallback, ...(CONFIG.CHANNELS[key] || {}) };
+}
+
+function getSensorKey(row) {
+    if (!row || typeof row !== 'object') return '';
+    return String(row.device_mac || row.device_id || '').trim();
+}
+
+function getSensorConfig(sensorKey) {
+    const key = String(sensorKey || '').trim();
+    const saved = (CONFIG.SENSORS && CONFIG.SENSORS[key]) || {};
+    return {
+        name: typeof saved.name === 'string' ? saved.name.trim() : '',
+        type: saved.type === 'exterieur' ? 'exterieur' : 'interieur',
+    };
+}
+
+function getSensorDisplayName(sensorKey) {
+    const key = String(sensorKey || '').trim();
+    const cfg = getSensorConfig(key);
+    return cfg.name || key || 'Sonde inconnue';
+}
+
+function getSensorTypeLabel(sensorKey) {
+    const cfg = getSensorConfig(sensorKey);
+    return cfg.type === 'exterieur' ? 'exterieur' : 'interieur';
+}
+
+function getKnownSensorKeys() {
+    const keys = new Set();
+
+    Object.keys(CONFIG.SENSORS || {}).forEach((key) => {
+        if (key) keys.add(key);
+    });
+
+    (appState.climateSeries || []).forEach((row) => {
+        const key = getSensorKey(row);
+        if (key) keys.add(key);
+    });
+
+    const latestKey = getSensorKey(appState.latestTemperature);
+    if (latestKey) keys.add(latestKey);
+
+    return Array.from(keys).sort();
 }
 
 function getUsedChannelKeys() {
@@ -510,11 +555,7 @@ function updateTemperatureCard() {
     const ageNode = document.getElementById('temperature-age');
     if (!valueNode || !humidityNode || !sensorsNode || !macNode || !ageNode) return;
 
-    const activeSensors = new Set(
-        (appState.climateSeries || [])
-            .map((row) => (row && (row.device_mac || row.device_id) ? String(row.device_mac || row.device_id) : ''))
-            .filter(Boolean)
-    );
+    const activeSensors = new Set(getKnownSensorKeys());
     sensorsNode.textContent = activeSensors.size > 0 ? String(activeSensors.size) : '--';
 
     const payload = appState.latestTemperature;
@@ -528,9 +569,12 @@ function updateTemperatureCard() {
 
     const temp = Number(payload.temperature_c);
     const humidity = Number(payload.humidity_pct);
+    const sensorKey = getSensorKey(payload);
+    const sensorName = getSensorDisplayName(sensorKey);
+    const sensorType = getSensorTypeLabel(sensorKey);
     valueNode.textContent = Number.isFinite(temp) ? `${temp.toFixed(1)} deg C` : '-- deg C';
     humidityNode.textContent = Number.isFinite(humidity) ? `${humidity.toFixed(1)} %` : '-- %';
-    macNode.textContent = payload.device_mac || '--';
+    macNode.textContent = sensorKey ? `${sensorName} (${sensorType})` : '--';
     ageNode.textContent = formatAge(appState.latestTemperatureAgeSeconds);
 }
 
@@ -679,12 +723,58 @@ async function refreshClimateAnalytics(force) {
         appState.climateSeries = rows
             .filter((row) => Number.isFinite(parseTimestampMs(row.ts_utc)))
             .sort((a, b) => parseTimestampMs(a.ts_utc) - parseTimestampMs(b.ts_utc));
+        appState.knownSensors = new Set(getKnownSensorKeys());
         appState.lastClimateRefreshMs = now;
 
         renderClimateChart();
+        renderSensorSettingsRows();
+        updateTemperatureCard();
     } catch (error) {
         console.error('Error loading climate analytics:', error);
     }
+}
+
+function renderSensorSettingsRows() {
+    const grid = document.getElementById('sensor-settings-grid');
+    if (!grid) return;
+
+    const sensorKeys = getKnownSensorKeys();
+    if (sensorKeys.length === 0) {
+        grid.innerHTML = '<div class="sensor-setting-empty">Aucune sonde detectee pour le moment.</div>';
+        return;
+    }
+
+    grid.innerHTML = '';
+    sensorKeys.forEach((sensorKey) => {
+        const cfg = getSensorConfig(sensorKey);
+        const row = document.createElement('div');
+        row.className = 'sensor-setting-row';
+
+        const keyNode = document.createElement('div');
+        keyNode.className = 'sensor-setting-key';
+        keyNode.textContent = sensorKey;
+
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.className = 'sensor-name-input';
+        nameInput.dataset.sensorKey = sensorKey;
+        nameInput.placeholder = 'Nom de la sonde';
+        nameInput.value = cfg.name;
+
+        const typeSelect = document.createElement('select');
+        typeSelect.className = 'sensor-type-select';
+        typeSelect.dataset.sensorKey = sensorKey;
+        typeSelect.innerHTML = [
+            '<option value="interieur">Sonde interieur</option>',
+            '<option value="exterieur">Sonde exterieur</option>',
+        ].join('');
+        typeSelect.value = cfg.type;
+
+        row.appendChild(keyNode);
+        row.appendChild(nameInput);
+        row.appendChild(typeSelect);
+        grid.appendChild(row);
+    });
 }
 
 function renderClimateChart() {
@@ -719,6 +809,8 @@ function renderClimateChart() {
 
     sensorKeys.forEach((sensorKey, index) => {
         const color = palette[index % palette.length];
+        const sensorName = getSensorDisplayName(sensorKey);
+        const sensorType = getSensorTypeLabel(sensorKey);
         const rowMap = bySensor.get(sensorKey);
         const tempData = timeKeys.map((ts) => {
             const value = Number(rowMap.get(ts)?.temperature_c);
@@ -731,12 +823,14 @@ function renderClimateChart() {
 
         if (tempData.some((value) => Number.isFinite(value))) {
             datasets.push({
-                label: `${sensorKey} - Temp (deg C)`,
+                label: `${sensorName} (${sensorType}) - Temp (deg C)`,
                 data: tempData,
                 borderColor: color,
                 backgroundColor: 'transparent',
                 borderWidth: 2.5,
                 tension: 0.25,
+                spanGaps: true,
+                pointRadius: 2,
                 fill: false,
                 yAxisID: 'yTemp',
             });
@@ -744,13 +838,15 @@ function renderClimateChart() {
 
         if (humData.some((value) => Number.isFinite(value))) {
             datasets.push({
-                label: `${sensorKey} - Hum (%)`,
+                label: `${sensorName} (${sensorType}) - Hum (%)`,
                 data: humData,
                 borderColor: color,
                 backgroundColor: 'transparent',
                 borderWidth: 2,
                 borderDash: [6, 4],
                 tension: 0.25,
+                spanGaps: true,
+                pointRadius: 2,
                 fill: false,
                 yAxisID: 'yHum',
             });
@@ -1251,6 +1347,19 @@ function loadSettings() {
             CONFIG.CHANNELS = merged;
         }
 
+        if (settings.sensors && typeof settings.sensors === 'object') {
+            const mergedSensors = {};
+            Object.entries(settings.sensors).forEach(([key, raw]) => {
+                if (!key) return;
+                const row = raw && typeof raw === 'object' ? raw : {};
+                mergedSensors[key] = {
+                    name: typeof row.name === 'string' ? row.name : '',
+                    type: row.type === 'exterieur' ? 'exterieur' : 'interieur',
+                };
+            });
+            CONFIG.SENSORS = mergedSensors;
+        }
+
         const refreshInput = document.getElementById('refresh-interval');
         const chartHoursInput = document.getElementById('chart-hours');
         const buyInput = document.getElementById('buy-price-kwh');
@@ -1272,6 +1381,7 @@ function loadSettings() {
 
     applyChannelSettingsToForm();
     refreshChartFilters();
+    renderSensorSettingsRows();
 
     const saveButton = document.getElementById('save-settings');
     if (saveButton) {
@@ -1324,12 +1434,25 @@ function saveSettings() {
         };
     });
 
+    const sensors = {};
+    document.querySelectorAll('.sensor-name-input').forEach((input) => {
+        const sensorKey = String(input.dataset.sensorKey || '').trim();
+        if (!sensorKey) return;
+        const typeSelect = document.querySelector(`.sensor-type-select[data-sensor-key="${sensorKey}"]`);
+        const typeValue = typeSelect ? typeSelect.value : 'interieur';
+        sensors[sensorKey] = {
+            name: String(input.value || '').trim(),
+            type: typeValue === 'exterieur' ? 'exterieur' : 'interieur',
+        };
+    });
+
     CONFIG.REFRESH_INTERVAL = Number.isFinite(refreshInterval) ? Math.max(1000, refreshInterval) : 3000;
     CONFIG.CHART_HOURS = Number.isFinite(chartHours) ? Math.max(1, Math.min(720, chartHours)) : 24;
     CONFIG.BUY_PRICE_KWH = Number.isFinite(buyPriceKwh) ? Math.max(0, buyPriceKwh) : 0.25;
     CONFIG.SELL_PRICE_KWH = Number.isFinite(sellPriceKwh) ? Math.max(0, sellPriceKwh) : 0.011;
     CONFIG.HAS_RESALE_CONTRACT = hasResaleContract;
     CONFIG.CHANNELS = channels;
+    CONFIG.SENSORS = sensors;
 
     localStorage.setItem(
         'datalogueur-settings',
@@ -1340,12 +1463,16 @@ function saveSettings() {
             sellPriceKwh: CONFIG.SELL_PRICE_KWH,
             hasResaleContract: CONFIG.HAS_RESALE_CONTRACT,
             channels: CONFIG.CHANNELS,
+            sensors: CONFIG.SENSORS,
         })
     );
 
     refreshChartFilters();
+    renderSensorSettingsRows();
     updateChannelInstantCards();
+    updateTemperatureCard();
     renderTrendChart();
+    renderClimateChart();
 
     alert('Parametres enregistres');
 }
