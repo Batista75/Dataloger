@@ -47,43 +47,29 @@ Compress-Archive -Path (Join-Path $PackageRoot "*") -DestinationPath $ArchivePat
 
 $Remote = "$RemoteUser@$RemoteHost"
 Write-Host "[deploy] Upload du package vers $Remote"
-& scp -P $SshPort $ArchivePath "$Remote:/tmp/datalogger_deploy.zip"
+& scp -P $SshPort $ArchivePath "${Remote}:/tmp/datalogger_deploy.zip"
 
-$RemoteScript = @"
-set -euo pipefail
-mkdir -p '$RemoteDir'
-python3 - <<'PY'
-import zipfile
-zipfile.ZipFile('/tmp/datalogger_deploy.zip').extractall('$RemoteDir')
-PY
-cd '$RemoteDir'
-chmod +x scripts/*.sh || true
-if [ -d .venv ]; then
-  ./scripts/update.sh
-else
-  ./scripts/setup.sh
-fi
-"@
+$remoteLines = @(
+        "set -eu",
+        "mkdir -p '$RemoteDir'",
+        "python3 -c ""import zipfile; zipfile.ZipFile('/tmp/datalogger_deploy.zip').extractall('$RemoteDir')""",
+        "cd '$RemoteDir'",
+        "chmod +x scripts/*.sh || true",
+        "if [ -d .venv ]; then ./scripts/update.sh; else ./scripts/setup.sh; fi"
+)
 
 if (-not $SkipRestart) {
-    $RemoteScript += @"
-sudo systemctl restart datalogger.service
-if grep -Eqi '^TUYA_ENABLED=(1|true|yes|on)$' .env; then
-  sudo systemctl restart datalogger-tuya.service
-fi
-"@
+        $remoteLines += "sudo systemctl restart datalogger.service"
+        $remoteLines += "if grep -Eqi '^TUYA_ENABLED=(1|true|yes|on)`$' .env; then sudo systemctl restart datalogger-tuya.service; fi"
 }
 
-$RemoteScript += @"
-printf 'API: '
-sudo systemctl is-active datalogger.service
-if systemctl list-unit-files | grep -q '^datalogger-tuya.service'; then
-  printf 'TUYA: '
-sudo systemctl is-active datalogger-tuya.service || true
-fi
-"@
+$remoteLines += "printf 'API: '"
+$remoteLines += "sudo systemctl is-active datalogger.service"
+$remoteLines += "if systemctl list-unit-files | grep -q '^datalogger-tuya.service'; then printf 'TUYA: '; sudo systemctl is-active datalogger-tuya.service || true; fi"
+
+$RemoteScript = ($remoteLines -join "`n")
 
 Write-Host "[deploy] Installation/update sur le Raspberry"
-$RemoteScript | & ssh -p $SshPort $Remote "bash -s"
+($RemoteScript -replace "`r", "") | & ssh -p $SshPort $Remote "bash -s"
 
 Write-Host "[deploy] Termine"
