@@ -15,7 +15,7 @@ from src.core.config import settings
 from src.db.init_db import init_database
 from src.db.repository import MeasurementRepository
 
-app = FastAPI(title="Datalogueur EM06", version="0.1.0")
+app = FastAPI(title="Datalogueur EM06P", version="0.1.0")
 repo = MeasurementRepository(settings.db_path)
 collector = CollectorService(repo=repo)
 

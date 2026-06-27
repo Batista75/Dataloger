@@ -30,6 +30,7 @@ Recommande pour EM06P en HTTP JSON-RPC 2.0 (local):
 - `EM06_HTTP_URL=http://192.168.1.27` (adresse du device, sans `/rpc/...`)
 - `EM06_HTTP_USERNAME=admin` (identifiant parametrable)
 - `EM06_HTTP_PASSWORD=...` (mot de passe parametrable)
+- Le collecteur interroge `Em.Status.Get` et parse les structures de type Refoss RPC (`em:<id>` / status multi-canaux).
 
 Option EM06P en MQTT:
 - `EM06_MODE=mqtt_json`
@@ -147,6 +148,8 @@ Important:
 
 Reference API EM06P:
 - https://docs.refoss.net/open-api/devices/em06p
+- Reference implementation Refoss RPC (modele de donnees `em`, `emmerge`):
+	- https://github.com/Refoss/refoss_rpc
 
 ## 4. Lancement
 

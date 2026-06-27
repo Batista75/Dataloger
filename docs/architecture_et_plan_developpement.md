@@ -8,13 +8,10 @@
 - Pipeline collecteur actif avec integration a pas fixe 20s + lissage + filtrage outliers.
 - Export et reset SQLite disponibles via scripts outils.
 
-### 1.2 Point bloquant principal
-- La source reelle Refoss n est pas encore exploitable.
-- En mode `refoss_local_socket`, le parser local n est pas implemente quand le fallback simule est coupe.
-- Les essais HTTP locaux sur `192.168.1.27:80` montrent:
-	- `GET /config` -> 405
-	- `POST /config` -> connexion fermee sans reponse
-	- comportement compatible avec un protocole signe/proprietaire.
+### 1.2 Point technique principal
+- La collecte reelle EM06P passe maintenant par HTTP JSON-RPC (`/rpc/Em.Status.Get`) avec authentification digest.
+- Le parser prend en charge les formats type Refoss RPC (entrees `em:<id>` et status multi-canaux).
+- Les modes de compatibilite (`mqtt_json`, `meross_local_post`, `http_json`) restent disponibles en secours.
 
 ### 1.3 Consequence fonctionnelle
 - Tant que la source reelle n est pas branchee, le service est soit:
@@ -66,11 +63,11 @@
 
 ## 4. Plan de developpement
 
-### Lot A - Source reelle EM06
-Objectif: obtenir des mesures physiques fiables et continues.
+### Lot A - Source reelle EM06P
+Objectif: stabiliser les mesures physiques fiables et continues.
 
 Actions:
-1. Option HTTP signee: implementer la signature locale si cle/secrets disponibles.
+1. Consolider le parsing RPC (validation des variantes firmware EM06P).
 2. Option Cloud API: integrer endpoint officiel si credentials app disponibles.
 3. Option MQTT: activer `mqtt_json` seulement si broker/topic reels confirmes.
 

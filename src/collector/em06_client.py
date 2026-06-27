@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import re
 import urllib.error
 import urllib.request
 import uuid
@@ -62,22 +63,24 @@ class EM06Client:
 			raise ConnectionError(f"Refoss local RPC failed: {exc}") from exc
 
 	def _read_refoss_http_rpc(self) -> Measurement:
-		url = _build_refoss_rpc_url("Em.Status.Get", {"id": 65535})
-		auth: HTTPDigestAuth | None = None
-		if settings.em06_http_username and settings.em06_http_password:
-			auth = HTTPDigestAuth(settings.em06_http_username, settings.em06_http_password)
+		# Refoss RPC variants may expose aggregate masks, full status maps, or per-channel queries.
+		for params in ({"id": 65535}, {"id": 63}, {"id": 127}):
+			payload = _fetch_refoss_rpc_json("Em.Status.Get", params)
+			entries = _extract_refoss_em_entries(payload)
+			if entries:
+				return _measurement_from_refoss_status({"result": {"status": entries}})
 
-		response = requests.get(url, timeout=settings.em06_timeout_seconds, auth=auth)
-		if response.status_code in {401, 403}:
-			raise PermissionError("Refoss digest authentication failed")
-		response.raise_for_status()
+		entries: list[dict[str, Any]] = []
+		for channel_id in range(1, 7):
+			payload = _fetch_refoss_rpc_json("Em.Status.Get", {"id": channel_id})
+			channel_entries = _extract_refoss_em_entries(payload)
+			if channel_entries:
+				entries.append(channel_entries[0])
 
-		try:
-			payload = response.json()
-		except ValueError as exc:
-			raise ValueError("Refoss Em.Status.Get response is not valid JSON") from exc
+		if not entries:
+			raise ValueError("Refoss EM06P RPC returned no em channel values")
 
-		return _measurement_from_refoss_status(payload)
+		return _measurement_from_refoss_status({"result": {"status": entries}})
 
 	def _read_mqtt_json(self, timeout_seconds: int) -> Measurement:
 		if not settings.em06_mqtt_host:
@@ -287,6 +290,75 @@ def _measurement_from_refoss_status(payload: dict[str, Any]) -> Measurement:
 		power_factor=power_factor,
 		quality_flag=1,
 	)
+
+
+def _fetch_refoss_rpc_json(method: str, params: dict[str, Any]) -> dict[str, Any]:
+	url = _build_refoss_rpc_url(method, params)
+	auth: HTTPDigestAuth | None = None
+	if settings.em06_http_username and settings.em06_http_password:
+		auth = HTTPDigestAuth(settings.em06_http_username, settings.em06_http_password)
+
+	response = requests.get(url, timeout=settings.em06_timeout_seconds, auth=auth)
+	if response.status_code in {401, 403}:
+		raise PermissionError("Refoss digest authentication failed")
+	response.raise_for_status()
+
+	try:
+		payload = response.json()
+	except ValueError as exc:
+		raise ValueError(f"Refoss {method} response is not valid JSON") from exc
+
+	if not isinstance(payload, dict):
+		raise ValueError(f"Refoss {method} payload is not an object")
+	return payload
+
+
+def _extract_refoss_em_entries(payload: dict[str, Any]) -> list[dict[str, Any]]:
+	root = payload.get("result", payload)
+	if not isinstance(root, dict):
+		return []
+
+	status = root.get("status", root)
+	if isinstance(status, list):
+		return [item for item in status if isinstance(item, dict) and _to_float(item.get("id")) is not None]
+
+	entries: list[dict[str, Any]] = []
+	if isinstance(status, dict):
+		for key, value in status.items():
+			if not isinstance(value, dict):
+				continue
+			match = re.match(r"^em:(\d+)$", str(key))
+			if match:
+				entry = dict(value)
+				entry.setdefault("id", int(match.group(1)))
+				entries.append(entry)
+
+		em_value = status.get("em")
+		if isinstance(em_value, list):
+			for item in em_value:
+				if isinstance(item, dict):
+					entry = dict(item)
+					if _to_float(entry.get("id")) is not None:
+						entries.append(entry)
+		elif isinstance(em_value, dict):
+			for key, value in em_value.items():
+				if not isinstance(value, dict):
+					continue
+				entry = dict(value)
+				if _to_float(entry.get("id")) is None:
+					cid = _to_float(key)
+					if cid is not None:
+						entry["id"] = int(cid)
+				if _to_float(entry.get("id")) is not None:
+					entries.append(entry)
+
+	entries_by_id: dict[int, dict[str, Any]] = {}
+	for item in entries:
+		channel_id = int(_to_float(item.get("id")) or 0)
+		if channel_id > 0:
+			entries_by_id[channel_id] = item
+
+	return [entries_by_id[key] for key in sorted(entries_by_id)]
 
 
 def _extract_measurement_dict(payload: Any) -> dict[str, Any]:
