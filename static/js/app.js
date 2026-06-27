@@ -49,7 +49,7 @@ let appState = {
     powerSeries: [],
     latestPoint: null,
     lastPowerRefreshMs: 0,
-    selectedGraphChannels: new Set(['total']),
+    selectedGraphChannels: new Set(),
     latestTemperature: null,
     latestTemperatureAgeSeconds: null,
     climateSeries: [],
@@ -57,6 +57,16 @@ let appState = {
     knownSensors: new Set(),
     unifiedHiddenDatasets: {},
 };
+
+function getDefaultSelectedGraphChannels() {
+    const keys = ['total'];
+    getUsedChannelKeys().forEach((key) => {
+        if (getChannelConfig(key).graph !== false) {
+            keys.push(key);
+        }
+    });
+    return new Set(keys);
+}
 
 // Initialize app
 let appInitialized = false;
@@ -724,11 +734,13 @@ function renderTrendChart() {
             if (getChannelConfig(channelKey).graph === false) return;
             if (!appState.selectedGraphChannels.has(channelKey)) return;
             const cfg = getChannelConfig(channelKey);
-            const series = aggregateByDailySlots(appState.powerSeries, (point) => point[`${channelKey}_consumption_w`]);
+            const series = aggregateByDailySlots(appState.powerSeries, (point) => point[`${channelKey}_signed_w`]);
             if (!series.some((v) => Number.isFinite(v))) return;
 
+            const typeLabel = cfg.type === 'generator' ? 'Generation' : 'Consommation';
+
             datasets.push({
-                label: `${cfg.name} - Consommation (W)`,
+                label: `${cfg.name} - ${typeLabel} (W signe)`,
                 data: series,
                 borderColor: getLineColor(channelKey, 'consumption'),
                 backgroundColor: 'transparent',
@@ -1335,7 +1347,7 @@ function syncSelectedGraphChannels() {
     const allKeys = new Set(['total', ...used]);
 
     if (!appState.selectedGraphChannels || appState.selectedGraphChannels.size === 0) {
-        appState.selectedGraphChannels = new Set(['total']);
+        appState.selectedGraphChannels = getDefaultSelectedGraphChannels();
     }
 
     appState.selectedGraphChannels.forEach((key) => {
@@ -1345,7 +1357,7 @@ function syncSelectedGraphChannels() {
     });
 
     if (appState.selectedGraphChannels.size === 0) {
-        appState.selectedGraphChannels.add('total');
+        appState.selectedGraphChannels = getDefaultSelectedGraphChannels();
     }
 }
 
@@ -1530,6 +1542,14 @@ function loadSettings() {
                 humidity: settings.graphSeries.humidity !== false,
             };
         }
+
+        if (Array.isArray(settings.selectedGraphChannels)) {
+            appState.selectedGraphChannels = new Set(
+                settings.selectedGraphChannels
+                    .map((v) => String(v || '').trim())
+                    .filter((v) => v.length > 0)
+            );
+        }
         appState.unifiedHiddenDatasets =
             settings.unifiedHiddenDatasets && typeof settings.unifiedHiddenDatasets === 'object'
                 ? settings.unifiedHiddenDatasets
@@ -1580,6 +1600,10 @@ function loadSettings() {
         if (buyInput) buyInput.value = CONFIG.BUY_PRICE_KWH;
         if (sellInput) sellInput.value = CONFIG.SELL_PRICE_KWH;
         if (resaleInput) resaleInput.checked = CONFIG.HAS_RESALE_CONTRACT;
+    }
+
+    if (!appState.selectedGraphChannels || appState.selectedGraphChannels.size === 0) {
+        appState.selectedGraphChannels = getDefaultSelectedGraphChannels();
     }
 
     applyChannelSettingsToForm();
@@ -1671,6 +1695,7 @@ function saveSettings() {
             hasResaleContract: CONFIG.HAS_RESALE_CONTRACT,
             unifiedChartMode: CONFIG.UNIFIED_CHART_MODE,
             graphSeries: CONFIG.GRAPH_SERIES,
+            selectedGraphChannels: Array.from(appState.selectedGraphChannels),
             unifiedHiddenDatasets: appState.unifiedHiddenDatasets,
             channels: CONFIG.CHANNELS,
             sensors: CONFIG.SENSORS,
