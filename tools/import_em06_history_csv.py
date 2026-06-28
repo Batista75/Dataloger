@@ -2,141 +2,16 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
-from dataclasses import dataclass
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-CHANNELS = ("a1", "b1", "c1", "a2", "b2", "c2")
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-
-@dataclass
-class DailyRow:
-    date_iso: str
-    a1_production_kwh: float
-    a1_consumption_kwh: float
-    b1_production_kwh: float
-    b1_consumption_kwh: float
-    c1_production_kwh: float
-    c1_consumption_kwh: float
-    a2_production_kwh: float
-    a2_consumption_kwh: float
-    b2_production_kwh: float
-    b2_consumption_kwh: float
-    c2_production_kwh: float
-    c2_consumption_kwh: float
-
-
-HEADER_MAP = {
-    "Date": "date",
-    "\ufeffDate": "date",
-    "Channel A1 Production(kWh)": "a1_prod",
-    "Channel A1 Consumption(kWh)": "a1_cons",
-    "Channel B1 Production(kWh)": "b1_prod",
-    "Channel B1 Consumption(kWh)": "b1_cons",
-    "Channel C1 Production(kWh)": "c1_prod",
-    "Channel C1 Consumption(kWh)": "c1_cons",
-    "Channel A2 Production(kWh)": "a2_prod",
-    "Channel A2 Consumption(kWh)": "a2_cons",
-    "Channel B2 Production(kWh)": "b2_prod",
-    "Channel B2 Consumption(kWh)": "b2_cons",
-    "Channel C2 Production(kWh)": "c2_prod",
-    "Channel C2 Consumption(kWh)": "c2_cons",
-}
-
-
-def _normalize_header_name(name: str) -> str:
-    return name.strip().lstrip("\ufeff")
-
-
-def _normalize_line(line: str) -> list[str]:
-    # Vendor export uses patterns like "value\t," and inconsistent spaces.
-    cleaned = line.replace("\t,", ",").replace(",\t", ",").replace("\t", "")
-    parts = [p.strip() for p in cleaned.split(",")]
-    while parts and parts[-1] == "":
-        parts.pop()
-    return parts
-
-
-def _to_float(raw: str) -> float:
-    value = raw.strip().replace(" ", "")
-    if not value:
-        return 0.0
-    try:
-        return float(value)
-    except ValueError:
-        return 0.0
-
-
-def _abs_non_negative(value: float) -> float:
-    return round(abs(value), 6)
-
-
-def parse_csv_rows(csv_path: Path) -> list[DailyRow]:
-    lines = csv_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    if not lines:
-        return []
-
-    header_parts = _normalize_line(lines[0])
-    if len(header_parts) < 13:
-        raise ValueError("CSV header format is not recognized")
-
-    idx = {}
-    for i, raw in enumerate(header_parts):
-        h = _normalize_header_name(raw)
-        mapped = HEADER_MAP.get(h)
-        if mapped:
-            idx[mapped] = i
-    required = [
-        "date",
-        "a1_prod",
-        "a1_cons",
-        "b1_prod",
-        "b1_cons",
-        "c1_prod",
-        "c1_cons",
-        "a2_prod",
-        "a2_cons",
-        "b2_prod",
-        "b2_cons",
-        "c2_prod",
-        "c2_cons",
-    ]
-    missing = [k for k in required if k not in idx]
-    if missing:
-        raise ValueError(f"CSV missing expected columns: {missing}")
-
-    rows: list[DailyRow] = []
-    for raw_line in lines[1:]:
-        if not raw_line.strip():
-            continue
-        parts = _normalize_line(raw_line)
-        if len(parts) <= idx["c2_cons"]:
-            continue
-
-        date_iso = parts[idx["date"]]
-        if not date_iso:
-            continue
-
-        rows.append(
-            DailyRow(
-                date_iso=date_iso,
-                a1_production_kwh=_abs_non_negative(_to_float(parts[idx["a1_prod"]])),
-                a1_consumption_kwh=_abs_non_negative(_to_float(parts[idx["a1_cons"]])),
-                b1_production_kwh=_abs_non_negative(_to_float(parts[idx["b1_prod"]])),
-                b1_consumption_kwh=_abs_non_negative(_to_float(parts[idx["b1_cons"]])),
-                c1_production_kwh=_abs_non_negative(_to_float(parts[idx["c1_prod"]])),
-                c1_consumption_kwh=_abs_non_negative(_to_float(parts[idx["c1_cons"]])),
-                a2_production_kwh=_abs_non_negative(_to_float(parts[idx["a2_prod"]])),
-                a2_consumption_kwh=_abs_non_negative(_to_float(parts[idx["a2_cons"]])),
-                b2_production_kwh=_abs_non_negative(_to_float(parts[idx["b2_prod"]])),
-                b2_consumption_kwh=_abs_non_negative(_to_float(parts[idx["b2_cons"]])),
-                c2_production_kwh=_abs_non_negative(_to_float(parts[idx["c2_prod"]])),
-                c2_consumption_kwh=_abs_non_negative(_to_float(parts[idx["c2_cons"]])),
-            )
-        )
-
-    return rows
+from tools.em06_day_data_io import DailyRow, parse_csv_rows
 
 
 def _iter_insert_values(rows: Iterable[DailyRow], include_today: bool) -> list[tuple[object, ...]]:

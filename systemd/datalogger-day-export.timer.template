@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily EM06 Power Monitor Day Data export at 00:05
+
+[Timer]
+OnCalendar=*-*-* 00:05:00
+Persistent=true
+Unit=datalogger-day-export.service
+
+[Install]
+WantedBy=timers.target

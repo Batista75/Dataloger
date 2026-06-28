@@ -248,12 +248,58 @@
                         <span class="info-label">Facteur de puissance:</span>
                         <span id="power-factor-value" class="info-value">--</span>
                     </div>
+                    <div class="info-item">
+                        <span class="info-label">Qualite donnees:</span>
+                        <span id="quality-status" class="info-value">--</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Confiance:</span>
+                        <span id="quality-confidence" class="info-value">--</span>
+                    </div>
                 </div>
             </div>
         </section>
 
         <!-- History Page -->
         <section id="history" class="page">
+            <div class="history-summary-grid">
+                <div class="history-summary-card">
+                    <div class="history-summary-label">Record conso la plus haute</div>
+                    <div class="history-summary-value" id="history-record-high">-- kWh</div>
+                    <div class="history-summary-meta" id="history-record-high-day">--</div>
+                </div>
+                <div class="history-summary-card">
+                    <div class="history-summary-label">Record conso la plus basse</div>
+                    <div class="history-summary-value" id="history-record-low">-- kWh</div>
+                    <div class="history-summary-meta" id="history-record-low-day">--</div>
+                </div>
+                <div class="history-summary-card">
+                    <div class="history-summary-label">Moyenne mois en cours</div>
+                    <div class="history-summary-value" id="history-month-avg">-- kWh</div>
+                    <div class="history-summary-meta">Depuis le 1er</div>
+                </div>
+                <div class="history-summary-card">
+                    <div class="history-summary-label">Derniere journee</div>
+                    <div class="history-summary-value" id="history-last-day">-- kWh</div>
+                    <div class="history-summary-meta" id="history-last-day-date">--</div>
+                </div>
+                <div class="history-summary-card">
+                    <div class="history-summary-label">Moyenne 7 derniers jours</div>
+                    <div class="history-summary-value" id="history-last7-avg">-- kWh</div>
+                    <div class="history-summary-meta">Glissant</div>
+                </div>
+                <div class="history-summary-card">
+                    <div class="history-summary-label">Comparaison J-1 an</div>
+                    <div class="history-summary-value" id="history-yoy-delta">--</div>
+                    <div class="history-summary-meta" id="history-yoy-ref">--</div>
+                </div>
+            </div>
+
+            <div class="history-chart-container">
+                <h3>Consommation annuelle (12 derniers mois)</h3>
+                <canvas id="history-yearly-chart"></canvas>
+            </div>
+
             <div class="history-controls">
                 <div class="control-group">
                     <label for="from-date">De:</label>
@@ -469,22 +515,130 @@
         <p>Auto-rafraîchissement: <span id="footer-interval">3</span>s | Dernière mise à jour: <span id="footer-time">--:--:--</span></p>
     </footer>
 
-    <!-- Chart.js Library -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
-    
-    <!-- App Script with cache busting -->
+    <!-- Fallback navigation: keeps tab switching usable even if app.js is delayed -->
     <script>
         (function () {
-            const cacheBust = Date.now().toString();
-            const style = document.getElementById('app-style');
-            if (style) {
-                style.href = `/css/style.css?v=${cacheBust}`;
+            function applyFallbackNavigation() {
+                const tabs = document.querySelectorAll('.nav-tab[data-page]');
+                const pages = document.querySelectorAll('.page');
+                if (!tabs.length || !pages.length) return;
+
+                tabs.forEach((tab) => {
+                    tab.addEventListener('click', function () {
+                        const page = this.dataset.page;
+                        if (!page) return;
+
+                        pages.forEach((p) => p.classList.remove('active'));
+                        tabs.forEach((t) => t.classList.remove('active'));
+
+                        const target = document.getElementById(page);
+                        if (target) target.classList.add('active');
+                        this.classList.add('active');
+                    });
+                });
             }
 
-            const appScript = document.createElement('script');
-            appScript.src = `/js/app.js?v=${cacheBust}`;
-            document.body.appendChild(appScript);
+            window.setTimeout(function () {
+                if (!window.__appNavReady) {
+                    applyFallbackNavigation();
+                }
+            }, 1200);
         })();
     </script>
+
+    <script>
+        (function () {
+            function setText(id, value) {
+                var n = document.getElementById(id);
+                if (n) n.textContent = value;
+            }
+
+            function setStatus(text, isError) {
+                setText('status-text', text);
+                var dot = document.getElementById('status-indicator');
+                if (!dot) return;
+                if (isError) dot.classList.add('error');
+                else dot.classList.remove('error');
+            }
+
+            function fmtNum(v, digits, unit) {
+                var n = Number(v);
+                if (!isFinite(n)) return '-- ' + unit;
+                return n.toFixed(digits) + ' ' + unit;
+            }
+
+            function fmtTime(ts) {
+                if (!ts) return '--:--:--';
+                var d = new Date(ts);
+                if (!isFinite(d.getTime())) return '--:--:--';
+                return d.toLocaleTimeString('fr-FR');
+            }
+
+            async function pollMinimal() {
+                // If main app is active, stop fallback polling quietly.
+                if (typeof window.startApp === 'function' && window.__appNavReady) {
+                    return;
+                }
+
+                try {
+                    var statusRes = await fetch('/api/status');
+                    var latestRes = await fetch('/api/measurements/latest');
+                    var tempRes = await fetch('/api/temperature/latest');
+
+                    if (!statusRes.ok || !latestRes.ok) {
+                        setStatus('API indisponible', true);
+                        return;
+                    }
+
+                    var status = await statusRes.json();
+                    var latest = await latestRes.json();
+                    var temp = tempRes.ok ? await tempRes.json() : null;
+
+                    var sensor = String((status && status.sensor) || '').toLowerCase();
+                    if (sensor === 'connected') setStatus('Capteur connecte', false);
+                    else if (sensor === 'starting' || sensor === 'connecting') setStatus('Connexion capteur...', false);
+                    else setStatus('API connectee', false);
+
+                    setText('sensor-state', (status && status.sensor) || 'Inconnu');
+                    setText('em06-mode', (status && status.em06_mode) || '--');
+
+                    var m = latest && latest.data ? latest.data : null;
+                    if (m) {
+                        setText('last-update', fmtTime(m.ts_utc));
+                        setText('voltage-value', fmtNum(m.voltage_v, 1, 'V'));
+                        setText('frequency-value', fmtNum(m.frequency_hz, 2, 'Hz'));
+                        setText('power-factor-value', isFinite(Number(m.power_factor)) ? Number(m.power_factor).toFixed(3) : '--');
+                    }
+
+                    var t = temp && temp.data ? temp.data : null;
+                    if (t) {
+                        setText('temperature-value', fmtNum(t.temperature_c, 1, 'deg C'));
+                        setText('humidity-value', fmtNum(t.humidity_pct, 1, '%'));
+                    }
+
+                    setText('footer-time', new Date().toLocaleTimeString('fr-FR'));
+                } catch (_) {
+                    setStatus('API indisponible', true);
+                }
+            }
+
+            pollMinimal();
+            window.setInterval(pollMinimal, 5000);
+        })();
+    </script>
+
+    <!-- App Script (non-blocking, cache-busted) -->
+    <script
+        src="/js/app.js?v=20260627b"
+        defer
+        onerror="(function(){var t=document.getElementById('status-text');var d=document.getElementById('status-indicator');if(t)t.textContent='Erreur chargement JS';if(d)d.classList.add('error');})();"
+    ></script>
+
+    <!-- Local Chart.js (deferred, non-blocking) -->
+    <script
+        src="/vendor/chart.umd.js"
+        defer
+        onload="try { if (typeof renderTrendChart === 'function') renderTrendChart(); if (typeof loadHistorySummary === 'function') loadHistorySummary(true); } catch (_) {}"
+    ></script>
 </body>
 </html>

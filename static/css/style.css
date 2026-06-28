@@ -504,6 +504,59 @@ body {
     flex-wrap: wrap;
 }
 
+.history-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.history-summary-card {
+    background: white;
+    border-radius: 12px;
+    padding: 1rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.history-summary-label {
+    color: #6b7280;
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-bottom: 0.35rem;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.history-summary-value {
+    color: #0f172a;
+    font-size: 1.3rem;
+    font-weight: 700;
+}
+
+.history-summary-meta {
+    color: #475569;
+    font-size: 0.83rem;
+    margin-top: 0.25rem;
+}
+
+.history-chart-container {
+    background: white;
+    border-radius: 12px;
+    padding: 1rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    margin-bottom: 1.5rem;
+}
+
+.history-chart-container h3 {
+    color: #1f2937;
+    font-size: 1rem;
+    margin-bottom: 0.75rem;
+}
+
+#history-yearly-chart {
+    max-height: 280px;
+}
+
 .control-group {
     display: flex;
     flex-direction: column;

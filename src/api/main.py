@@ -2,18 +2,30 @@ from __future__ import annotations
 
 import csv
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi import Query
 from fastapi.staticfiles import StaticFiles
+import requests
+from requests.auth import HTTPDigestAuth
 
 from src.collector.service import CollectorService
 from src.core.config import settings
 from src.db.init_db import init_database
 from src.db.repository import MeasurementRepository
+
+CHANNEL_BY_ID = {
+	1: "a1",
+	2: "b1",
+	3: "c1",
+	4: "a2",
+	5: "b2",
+	6: "c2",
+}
 
 app = FastAPI(title="Datalogueur EM06P", version="0.1.0")
 repo = MeasurementRepository(settings.db_path)
@@ -158,6 +170,382 @@ def measurements(
 	}
 
 
+@app.get("/api/quality/latest")
+def quality_latest(minutes: int = Query(default=120, ge=30, le=1440)) -> dict[str, Any]:
+	now = datetime.now(timezone.utc)
+	from_ts = now - timedelta(minutes=minutes)
+	expected_count = max(int((minutes * 60) / max(settings.poll_seconds, 1)), 1)
+	sample_limit = min(max(expected_count // 4, 180), 400)
+	rows = repo.get_recent_quality(limit=sample_limit)
+
+	if not rows:
+		return {
+			"status": "manquante",
+			"confidence_pct": 0,
+			"rules": {
+				"power_bounds_w": {"min": -6000, "max": 9000},
+				"max_gap_seconds": max(settings.poll_seconds * 3, 30),
+			},
+			"indicators": {
+				"window_minutes": minutes,
+				"sample_count": 0,
+				"missing_ratio_pct": 100.0,
+				"gap_count": 0,
+				"anomaly_count": 0,
+				"quality_flag_suspect_count": 0,
+			},
+			"alerts": ["Aucune mesure recente"],
+			"ui_behavior": {
+				"show_warning_banner": True,
+				"allow_strong_recommendation": False,
+			},
+			"known_limits": [
+				"Qualite dependante de la disponibilite reseau capteur/API",
+				"Evaluation basee sur les mesures recentes seulement",
+			],
+		}
+
+	parsed_rows: list[tuple[datetime, dict[str, Any]]] = []
+	for row in rows:
+		ts = _parse_iso_utc(row.get("ts_utc"))
+		if ts is None:
+			continue
+		if ts < from_ts or ts > now:
+			continue
+		parsed_rows.append((ts, row))
+
+	parsed_rows.sort(key=lambda item: item[0])
+	if not parsed_rows:
+		return {
+			"status": "invalide",
+			"confidence_pct": 10,
+			"rules": {
+				"power_bounds_w": {"min": -6000, "max": 9000},
+				"max_gap_seconds": max(settings.poll_seconds * 3, 30),
+			},
+			"indicators": {
+				"window_minutes": minutes,
+				"sample_count": 0,
+				"missing_ratio_pct": 100.0,
+				"gap_count": 0,
+				"anomaly_count": 1,
+				"quality_flag_suspect_count": 0,
+			},
+			"alerts": ["Horodatage invalide sur les mesures recentes"],
+			"ui_behavior": {
+				"show_warning_banner": True,
+				"allow_strong_recommendation": False,
+			},
+			"known_limits": [
+				"Source de temps capteur potentiellement desynchronisee",
+			],
+		}
+
+	max_gap_seconds = max(settings.poll_seconds * 3, 30)
+	actual_count = len(parsed_rows)
+	missing_ratio_pct = max(0.0, 100.0 * (expected_count - actual_count) / expected_count)
+
+	gap_count = 0
+	suspect_count = 0
+	quality_flag_suspect_count = 0
+
+	prev = parsed_rows[0]
+	for current in parsed_rows[1:]:
+		delta = (current[0] - prev[0]).total_seconds()
+		if delta > max_gap_seconds:
+			gap_count += 1
+
+		prev_cons = _to_float(prev[1].get("total_consumption_kwh")) or 0.0
+		prev_prod = _to_float(prev[1].get("total_production_kwh")) or 0.0
+		cur_cons = _to_float(current[1].get("total_consumption_kwh")) or 0.0
+		cur_prod = _to_float(current[1].get("total_production_kwh")) or 0.0
+
+		# Cumulative indexes should not go backwards significantly.
+		if cur_cons + 1e-9 < prev_cons or cur_prod + 1e-9 < prev_prod:
+			suspect_count += 1
+
+		prev = current
+
+	for _, row in parsed_rows:
+		qf = row.get("quality_flag")
+		try:
+			if int(qf) != 1:
+				quality_flag_suspect_count += 1
+		except (TypeError, ValueError):
+			quality_flag_suspect_count += 1
+
+	alerts: list[str] = []
+	if missing_ratio_pct > 20:
+		alerts.append("Taux de mesures manquantes eleve")
+	if gap_count > 0:
+		alerts.append("Ruptures de collecte detectees")
+	if suspect_count > 0:
+		alerts.append("Incoherences d indexes cumulatifs detectees")
+	if quality_flag_suspect_count > 0:
+		alerts.append("Mesures marquees suspectes/invalide presentes")
+
+	confidence = 100.0
+	confidence -= min(missing_ratio_pct, 70)
+	confidence -= min(gap_count * 8.0, 20)
+	confidence -= min(suspect_count * 2.0, 20)
+	confidence -= min(quality_flag_suspect_count * 1.0, 20)
+	confidence = max(0.0, min(100.0, confidence))
+
+	if confidence >= 80 and not alerts:
+		status = "valide"
+	elif confidence >= 45:
+		status = "suspecte"
+	else:
+		status = "invalide"
+
+	return {
+		"status": status,
+		"confidence_pct": int(round(confidence)),
+		"rules": {
+			"power_bounds_w": {"min": -6000, "max": 9000},
+			"max_gap_seconds": max_gap_seconds,
+		},
+		"indicators": {
+			"window_minutes": minutes,
+			"sample_count": actual_count,
+			"missing_ratio_pct": round(missing_ratio_pct, 2),
+			"gap_count": gap_count,
+			"anomaly_count": suspect_count,
+			"quality_flag_suspect_count": quality_flag_suspect_count,
+		},
+		"alerts": alerts,
+		"ui_behavior": {
+			"show_warning_banner": bool(alerts),
+			"allow_strong_recommendation": status == "valide",
+		},
+		"known_limits": [
+			"La coherence multi-circuits reste partielle sans metadonnees metier completes",
+			"La puissance instantanee derivee depend du pas de collecte",
+		],
+	}
+
+
+@app.get("/api/history/daily-summary")
+def history_daily_summary(days: int = Query(default=800, ge=60, le=3000)) -> dict[str, Any]:
+	daily_rows = repo.get_daily_consumption(limit_days=days)
+	series: list[dict[str, Any]] = []
+
+	for row in daily_rows:
+		day_raw = str(row.get("date_utc") or "")
+		value = _to_float(row.get("daily_consumption_kwh"))
+		if not day_raw or value is None:
+			continue
+		try:
+			day_obj = date.fromisoformat(day_raw)
+		except ValueError:
+			continue
+		series.append({"date": day_obj, "date_utc": day_raw, "consumption_kwh": round(max(value, 0.0), 6)})
+
+	if not series:
+		return {
+			"refresh_policy": "daily",
+			"generated_day_utc": datetime.now(timezone.utc).date().isoformat(),
+			"record_high": None,
+			"record_low": None,
+			"current_month_average_kwh": None,
+			"last_day": None,
+			"last_7_days_average_kwh": None,
+			"year_over_year": None,
+			"monthly_consumption_last_12": [],
+		}
+
+	latest = series[-1]
+	high = max(series, key=lambda item: float(item["consumption_kwh"]))
+	low = min(series, key=lambda item: float(item["consumption_kwh"]))
+
+	month_start = latest["date"].replace(day=1)
+	month_values = [float(item["consumption_kwh"]) for item in series if item["date"] >= month_start and item["date"] <= latest["date"]]
+	month_avg = sum(month_values) / len(month_values) if month_values else None
+
+	last7_values = [float(item["consumption_kwh"]) for item in series[-7:]]
+	last7_avg = sum(last7_values) / len(last7_values) if last7_values else None
+
+	try:
+		yoy_date = latest["date"].replace(year=latest["date"].year - 1)
+	except ValueError:
+		yoy_date = latest["date"] - timedelta(days=365)
+
+	yoy_ref = next((item for item in series if item["date"] == yoy_date), None)
+	if yoy_ref is None:
+		yoy_payload: dict[str, Any] | None = None
+	else:
+		ref_value = float(yoy_ref["consumption_kwh"])
+		last_value = float(latest["consumption_kwh"])
+		pct = ((last_value - ref_value) / ref_value * 100.0) if ref_value > 0 else None
+		yoy_payload = {
+			"reference_day_utc": yoy_ref["date_utc"],
+			"reference_consumption_kwh": round(ref_value, 6),
+			"delta_kwh": round(last_value - ref_value, 6),
+			"delta_pct": round(pct, 3) if pct is not None else None,
+		}
+
+	monthly_totals: dict[str, float] = {}
+	for item in series:
+		month_key = item["date"].strftime("%Y-%m")
+		monthly_totals[month_key] = monthly_totals.get(month_key, 0.0) + float(item["consumption_kwh"])
+
+	sorted_months = sorted(monthly_totals.keys())
+	last_12 = sorted_months[-12:]
+	monthly_payload = [
+		{"month": month, "consumption_kwh": round(monthly_totals[month], 6)}
+		for month in last_12
+	]
+
+	return {
+		"refresh_policy": "daily",
+		"generated_day_utc": datetime.now(timezone.utc).date().isoformat(),
+		"record_high": {
+			"day_utc": high["date_utc"],
+			"consumption_kwh": round(float(high["consumption_kwh"]), 6),
+		},
+		"record_low": {
+			"day_utc": low["date_utc"],
+			"consumption_kwh": round(float(low["consumption_kwh"]), 6),
+		},
+		"current_month_average_kwh": round(month_avg, 6) if month_avg is not None else None,
+		"last_day": {
+			"day_utc": latest["date_utc"],
+			"consumption_kwh": round(float(latest["consumption_kwh"]), 6),
+		},
+		"last_7_days_average_kwh": round(last7_avg, 6) if last7_avg is not None else None,
+		"year_over_year": yoy_payload,
+		"monthly_consumption_last_12": monthly_payload,
+	}
+
+
+@app.get("/api/refoss/compare-live")
+def refoss_compare_live() -> dict[str, Any]:
+	if settings.em06_mode != "refoss_local_socket":
+		return {
+			"enabled": False,
+			"reason": "EM06_MODE is not refoss_local_socket",
+		}
+
+	try:
+		base_url = settings.em06_http_url.strip()
+		if not base_url:
+			return {
+				"enabled": True,
+				"error": "EM06_HTTP_URL is empty",
+			}
+		if "://" not in base_url:
+			base_url = f"http://{base_url}"
+		parsed = urlparse(base_url)
+		netloc = parsed.netloc or parsed.path
+		rpc_url = f"{parsed.scheme or 'http'}://{netloc}/rpc/Em.Status.Get?id=65535"
+
+		auth = None
+		if settings.em06_http_username and settings.em06_http_password:
+			auth = HTTPDigestAuth(settings.em06_http_username, settings.em06_http_password)
+
+		resp = requests.get(rpc_url, timeout=max(settings.em06_timeout_seconds, 3), auth=auth)
+		resp.raise_for_status()
+		payload = resp.json()
+
+		status = payload.get("result", payload)
+		if isinstance(status, dict):
+			status = status.get("status")
+		entries = status if isinstance(status, list) else []
+	except Exception as exc:
+		return {
+			"enabled": True,
+			"error": f"RPC read failed: {exc}",
+		}
+
+	raw_power_w: dict[str, float] = {}
+	for entry in entries:
+		channel_id = int(_to_float(entry.get("id")) or 0)
+		channel = CHANNEL_BY_ID.get(channel_id)
+		if not channel:
+			continue
+		raw_power_w[channel] = float(_to_float(entry.get("power")) or 0.0)
+
+	recent = repo.get_recent(limit=120)
+	if len(recent) < 2:
+		return {
+			"enabled": True,
+			"raw_power_w": raw_power_w,
+			"error": "Not enough local samples to compute reconstructed power",
+		}
+
+	cur = recent[-1]
+	prev = None
+	for candidate in reversed(recent[:-1]):
+		has_delta = False
+		for channel in CHANNEL_BY_ID.values():
+			cand_cons = _to_float(candidate.get(f"{channel}_consumption_kwh")) or 0.0
+			cand_prod = _to_float(candidate.get(f"{channel}_production_kwh")) or 0.0
+			cur_cons = _to_float(cur.get(f"{channel}_consumption_kwh")) or 0.0
+			cur_prod = _to_float(cur.get(f"{channel}_production_kwh")) or 0.0
+			if abs(cur_cons - cand_cons) > 1e-9 or abs(cur_prod - cand_prod) > 1e-9:
+				has_delta = True
+				break
+		if has_delta:
+			prev = candidate
+			break
+
+	if prev is None:
+		prev = recent[-2]
+	prev_ts = _parse_iso_utc(prev.get("ts_utc"))
+	cur_ts = _parse_iso_utc(cur.get("ts_utc"))
+	if prev_ts is None or cur_ts is None:
+		return {
+			"enabled": True,
+			"raw_power_w": raw_power_w,
+			"error": "Invalid local timestamps",
+		}
+
+	delta_s = max((cur_ts - prev_ts).total_seconds(), 1e-6)
+	local_power_w: dict[str, float] = {}
+	comparison: dict[str, Any] = {}
+
+	for channel in CHANNEL_BY_ID.values():
+		prev_cons = _to_float(prev.get(f"{channel}_consumption_kwh")) or 0.0
+		cur_cons = _to_float(cur.get(f"{channel}_consumption_kwh")) or 0.0
+		prev_prod = _to_float(prev.get(f"{channel}_production_kwh")) or 0.0
+		cur_prod = _to_float(cur.get(f"{channel}_production_kwh")) or 0.0
+
+		cons_w = max(0.0, (cur_cons - prev_cons) * 3600000.0 / delta_s)
+		prod_w = max(0.0, (cur_prod - prev_prod) * 3600000.0 / delta_s)
+		signed_local = cons_w - prod_w
+		local_power_w[channel] = round(signed_local, 3)
+
+		raw_value = float(raw_power_w.get(channel, 0.0))
+		diff_w = signed_local - raw_value
+		relative_pct = None
+		if abs(raw_value) >= 1.0:
+			relative_pct = round((diff_w / raw_value) * 100.0, 2)
+
+		comparison[channel] = {
+			"refoss_w": round(raw_value, 3),
+			"local_w": round(signed_local, 3),
+			"diff_w": round(diff_w, 3),
+			"diff_pct": relative_pct,
+		}
+
+	raw_total = sum(raw_power_w.values())
+	local_total = sum(local_power_w.values())
+	total_diff = local_total - raw_total
+
+	return {
+		"enabled": True,
+		"ts_utc": datetime.now(timezone.utc).isoformat(),
+		"window_seconds": round(delta_s, 3),
+		"comparison_by_channel": comparison,
+		"totals": {
+			"refoss_w": round(raw_total, 3),
+			"local_w": round(local_total, 3),
+			"diff_w": round(total_diff, 3),
+			"diff_pct": round((total_diff / raw_total) * 100.0, 2) if abs(raw_total) >= 1.0 else None,
+		},
+	}
+
+
 static_path = Path(__file__).parent.parent.parent / "static"
 if static_path.exists():
 	app.mount("/", StaticFiles(directory=str(static_path), html=True), name="static")
@@ -236,4 +624,13 @@ def _to_float(value: Any) -> float | None:
 	try:
 		return float(value)
 	except (TypeError, ValueError):
+		return None
+
+
+def _parse_iso_utc(value: Any) -> datetime | None:
+	if not isinstance(value, str) or not value.strip():
+		return None
+	try:
+		return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+	except ValueError:
 		return None

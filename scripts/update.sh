@@ -20,6 +20,10 @@ info "Mise a jour schema base"
 cd "$APP_DIR"
 "$APP_DIR/.venv/bin/python" -m src.db.init_db
 
+info "Mise a jour timer export journalier EM06"
+chmod +x "$APP_DIR/scripts/export_em06_day_data.sh" "$APP_DIR/scripts/install_day_export_timer.sh"
+"$APP_DIR/scripts/install_day_export_timer.sh"
+
 info "Redemarrage du service API"
 sudo systemctl restart "$SERVICE_NAME"
 sudo systemctl is-active --quiet "$SERVICE_NAME" || fail "Le service API ne repond pas apres mise a jour"

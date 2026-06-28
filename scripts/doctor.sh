@@ -4,6 +4,7 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_NAME="datalogger.service"
 TUYA_SERVICE_NAME="datalogger-tuya.service"
+DAY_EXPORT_TIMER_NAME="datalogger-day-export.timer"
 DB_FILE="$APP_DIR/data/measurements.db"
 TUYA_FILE="$APP_DIR/data/tuya_temperature_latest.json"
 HEALTH_URL="http://127.0.0.1:8000/health"
@@ -57,6 +58,21 @@ case "${TUYA_ENABLED_RAW,,}" in
     ;;
   *)
     warn "TUYA_ENABLED!=1, checks Tuya ignores"
+    ;;
+esac
+
+DAY_EXPORT_ENABLED_RAW="$(grep -E '^EM06_DAY_DATA_EXPORT_ENABLED=' "$APP_DIR/.env" 2>/dev/null | head -n1 | cut -d'=' -f2- | tr -d '[:space:]' || true)"
+case "${DAY_EXPORT_ENABLED_RAW,,}" in
+  1|true|yes|on)
+    if systemctl is-active --quiet "$DAY_EXPORT_TIMER_NAME"; then
+      ok "Timer export journalier actif"
+    else
+      crit "Timer export journalier inactif"
+      EXIT_CODE=2
+    fi
+    ;;
+  *)
+    warn "EM06_DAY_DATA_EXPORT_ENABLED!=1, check timer ignore"
     ;;
 esac
 

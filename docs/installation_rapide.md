@@ -162,6 +162,40 @@ uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 - `GET /api/status` doit repondre avec l etat capteur.
 - `GET /api/measurements/latest` doit retourner une mesure recente si la source est active.
 
+## 5.bis Fiabilite des mesures (version 2026-06-27)
+
+### Regles de validation des mesures
+- Controle des bornes physiques de puissance instantanee: `[-6000 W, 9000 W]`.
+- Detection de ruptures de collecte selon un seuil `max_gap_seconds = max(POLL_SECONDS * 3, 30)`.
+- Detection d incoherence d index cumules (index conso/prod qui reculent).
+- Prise en compte du `quality_flag` de chaque mesure (`1=valide`, autre=suspect/invalide/import historique).
+
+### Indicateurs de qualite des donnees
+- Endpoint: `GET /api/quality/latest?minutes=120`.
+- Statut global: `valide`, `suspecte`, `invalide`, `manquante`.
+- Score de confiance: `confidence_pct` (0 a 100).
+- Indicateurs:
+	- `missing_ratio_pct`
+	- `gap_count`
+	- `anomaly_count`
+	- `quality_flag_suspect_count`
+
+### Seuils d alerte
+- Donnees manquantes elevees: `missing_ratio_pct > 20`.
+- Au moins une rupture de collecte: `gap_count > 0`.
+- Incoherences detectees: `anomaly_count > 0`.
+- Mesures suspectes: `quality_flag_suspect_count > 0`.
+
+### Comportement interface si donnees manquantes/suspectes
+- Affichage explicite du statut qualite et du score de confiance dans le dashboard.
+- Affichage d alertes qualite (liste `alerts` de l endpoint qualite).
+- Desactivation des recommandations fortes si la qualite n est pas `valide`.
+
+### Limites connues de fiabilite
+- Qualite dependante de la latence/disponibilite reseau capteur et API.
+- Cohérence multi-circuits partielle sans metadonnees metier completes.
+- Puissance instantanee derivee sensible au pas de collecte.
+
 ## 6. Workflow recommande: maquette locale puis push Raspberry
 Objectif: iterer rapidement sur la machine de dev, puis deployer seulement une version valide sur le Raspberry.
 
@@ -288,11 +322,68 @@ git push -u origin main
 4. Deploiement Raspberry (192.168.1.87) via `./scripts/deploy_raspberry.ps1`
 
 ## 9. Operations utiles
-- Export CSV:
+- Export CSV brut (toutes les mesures SQLite):
 
 ```bash
 python3 tools/export_all_values.py
 ```
+
+- Export journalier format Refoss (Power Monitor Day Data, meme format que l app mobile):
+
+```bash
+# Export des jours collectes par le Raspberry / Dataloger
+python3 tools/export_em06_day_data.py --db data/measurements.db
+
+# Fusion avec l historique Refoss deja exporte (analyse pluri-annuelle)
+python3 tools/export_em06_day_data.py \
+  --db data/measurements.db \
+  --from-date 2026-06-28 \
+  --merge-with "Historique consommation EM06/Power Monitor Day Data - Smart Energy Monitor - 20260627.csv" \
+  --merge-out "exports/Power Monitor Day Data - combined.csv"
+```
+
+Notes:
+- Le fichier genere reprend les colonnes Refoss (`Date`, `Channel C1 Production(kWh)`, etc.).
+- Les jours issus de l import historique (`quality_flag=2`) sont exportes tels quels.
+- Les jours issus de la collecte live utilisent le delta des index cumules (fin de jour - fin de veille).
+- Par defaut, le jour UTC en cours est exclu (jour partiel). Ajouter `--include-today` si besoin.
+
+Export automatique nocturne (Raspberry, 00:05):
+
+1. Copier l historique Refoss sur le Raspberry:
+
+```bash
+mkdir -p data/refoss_history
+cp "/chemin/local/Power Monitor Day Data - Smart Energy Monitor - 20260627.csv" data/refoss_history/
+```
+
+2. Activer dans `.env`:
+
+```dotenv
+EM06_DAY_DATA_EXPORT_ENABLED=1
+EM06_DAY_DATA_BASE_CSV=data/refoss_history/Power Monitor Day Data - Smart Energy Monitor - 20260627.csv
+EM06_DAY_DATA_FROM_DATE=2026-06-28
+```
+
+3. Installer / reactiver le timer:
+
+```bash
+./scripts/install_day_export_timer.sh
+```
+
+Verification:
+
+```bash
+sudo systemctl status datalogger-day-export.timer
+sudo systemctl list-timers datalogger-day-export.timer
+# Test manuel immediat
+sudo systemctl start datalogger-day-export.service
+journalctl -u datalogger-day-export.service -n 30 --no-pager
+```
+
+Fichiers produits chaque nuit:
+- `exports/Power Monitor Day Data - raspberry.csv` (mesures Dataloger)
+- `exports/Power Monitor Day Data - combined.csv` (historique Refoss + Raspberry)
 
 - Reset historique mesures:
 

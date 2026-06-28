@@ -16,6 +16,8 @@ const CONFIG = {
     CHART_AXIS_LABEL_MINUTES: 15,
     CHART_MOVING_AVERAGE_WINDOW: 3,
     HISTORY_LIMIT: 100,
+    HISTORY_SUMMARY_REFRESH_MS: 24 * 60 * 60 * 1000,
+    QUALITY_REFRESH_MS: 5 * 60 * 1000,
     BUY_PRICE_KWH: 0.25,
     SELL_PRICE_KWH: 0.011,
     HAS_RESALE_CONTRACT: false,
@@ -54,6 +56,10 @@ let appState = {
     latestTemperatureAgeSeconds: null,
     climateSeries: [],
     lastClimateRefreshMs: 0,
+    lastHistorySummaryRefreshMs: 0,
+    lastQualityRefreshMs: 0,
+    historySummaryChart: null,
+    dataQuality: null,
     knownSensors: new Set(),
     unifiedHiddenDatasets: {},
 };
@@ -98,6 +104,9 @@ function startApp() {
 
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', startApp);
+    // On slow devices, deferred script downloads can delay DOMContentLoaded.
+    // Ensure core polling starts anyway after a short grace period.
+    window.setTimeout(startApp, 1500);
 } else {
     startApp();
 }
@@ -113,6 +122,11 @@ function fmtW(value) {
     const rounded = Math.round(value);
     const normalized = Object.is(rounded, -0) ? 0 : rounded;
     return `${normalized.toLocaleString('fr-FR')} W`;
+}
+
+function fmtKwh(value, digits = 3) {
+    if (!Number.isFinite(value)) return '-- kWh';
+    return `${Number(value).toFixed(digits)} kWh`;
 }
 
 function fmtTrend(current, previous) {
@@ -173,6 +187,11 @@ function getSensorTypeLabel(sensorKey) {
 
 function getKnownSensorKeys() {
     const keys = new Set();
+
+    Object.keys(CONFIG.SENSORS || {}).forEach((key) => {
+        const normalized = String(key || '').trim();
+        if (normalized) keys.add(normalized);
+    });
 
     (appState.climateSeries || []).forEach((row) => {
         const key = getSensorKey(row);
@@ -569,6 +588,7 @@ function getBusinessTotals(point) {
 
 /* ============ Navigation ============ */
 function initializeNavigation() {
+    window.__appNavReady = true;
     document.querySelectorAll('.nav-tab').forEach((tab) => {
         tab.addEventListener('click', () => {
             const page = tab.dataset.page;
@@ -587,10 +607,15 @@ function switchPage(page) {
     appState.currentPage = page;
 
     if (page === 'history') {
+        loadHistorySummary(false);
         loadHistory();
     }
     if (page === 'dashboard') {
         refreshPowerAnalytics(true);
+        refreshClimateAnalytics(true);
+    }
+    if (page === 'settings') {
+        renderSensorSettingsRows();
         refreshClimateAnalytics(true);
     }
 }
@@ -598,15 +623,11 @@ function switchPage(page) {
 /* ============ Data Loading ============ */
 async function updateAllData() {
     try {
-        const [statusRes, latestRes, tempRes] = await Promise.all([
-            fetch(`${CONFIG.API_BASE}/api/status`),
-            fetch(`${CONFIG.API_BASE}/api/measurements/latest`),
-            fetch(`${CONFIG.API_BASE}/api/temperature/latest`),
+        const [status, latest, temperature] = await Promise.all([
+            safeFetchJson(`${CONFIG.API_BASE}/api/status`, 4000),
+            safeFetchJson(`${CONFIG.API_BASE}/api/measurements/latest`, 4000),
+            safeFetchJson(`${CONFIG.API_BASE}/api/temperature/latest`, 5000),
         ]);
-
-        const status = statusRes.ok ? await statusRes.json() : null;
-        const latest = latestRes.ok ? await latestRes.json() : null;
-        const temperature = tempRes.ok ? await tempRes.json() : null;
 
         appState.latestTemperature = temperature && temperature.data ? temperature.data : null;
         appState.latestTemperatureAgeSeconds = temperature && Number.isFinite(Number(temperature.data_age_seconds))
@@ -615,6 +636,8 @@ async function updateAllData() {
 
         updateStatus(status, latest);
         updateTemperatureCard();
+        renderSensorSettingsRows();
+        refreshQualityInfo(false);
 
         if (status) {
             updateSystemInfo(status);
@@ -631,6 +654,69 @@ async function updateAllData() {
         console.error('Error fetching data:', error);
         updateStatus(null, null);
     }
+}
+
+function refreshQualityInfo(force) {
+    const now = Date.now();
+    if (!force && now - appState.lastQualityRefreshMs < CONFIG.QUALITY_REFRESH_MS) {
+        return;
+    }
+    appState.lastQualityRefreshMs = now;
+
+    safeFetchJson(`${CONFIG.API_BASE}/api/quality/latest?minutes=120`, 2500)
+        .then((quality) => {
+            if (quality && typeof quality === 'object') {
+                updateQualityInfo(quality);
+            }
+        })
+        .catch(() => {
+            // Keep previous quality info if quality API times out.
+        });
+}
+
+function updateQualityInfo(quality) {
+    const statusNode = document.getElementById('quality-status');
+    const confNode = document.getElementById('quality-confidence');
+    if (!statusNode || !confNode) return;
+
+    if (!quality || typeof quality !== 'object') {
+        statusNode.textContent = 'inconnue';
+        confNode.textContent = '--';
+        appState.dataQuality = null;
+        return;
+    }
+
+    const status = String(quality.status || 'inconnue');
+    const confidence = Number(quality.confidence_pct);
+    statusNode.textContent = status;
+    confNode.textContent = Number.isFinite(confidence) ? `${Math.round(confidence)} %` : '--';
+    appState.dataQuality = quality;
+}
+
+async function safeFetchJson(url, timeoutMs) {
+    const ms = Math.max(500, Number(timeoutMs) || 4000);
+    const hasAbort = typeof AbortController !== 'undefined';
+    const controller = hasAbort ? new AbortController() : null;
+
+    const fetchPromise = fetch(url, hasAbort ? { signal: controller.signal } : undefined)
+        .then((response) => (response.ok ? response.json() : null))
+        .catch(() => null);
+
+    let timeoutHandle = null;
+    const timeoutPromise = new Promise((resolve) => {
+        timeoutHandle = window.setTimeout(() => {
+            if (controller) {
+                try {
+                    controller.abort();
+                } catch (_) {}
+            }
+            resolve(null);
+        }, ms);
+    });
+
+    const result = await Promise.race([fetchPromise, timeoutPromise]);
+    if (timeoutHandle) window.clearTimeout(timeoutHandle);
+    return result;
 }
 
 function formatAge(ageSeconds) {
@@ -700,6 +786,7 @@ async function refreshPowerAnalytics(force) {
 }
 
 function renderTrendChart() {
+    if (typeof Chart === 'undefined') return;
     const canvas = document.getElementById('trend-chart');
     if (!canvas) return;
 
@@ -912,9 +999,16 @@ async function refreshClimateAnalytics(force) {
 
         const payload = await response.json();
         const rows = Array.isArray(payload.data) ? payload.data : [];
-        appState.climateSeries = rows
+        const normalizedRows = rows
             .filter((row) => Number.isFinite(parseTimestampMs(row.ts_utc)))
             .sort((a, b) => parseTimestampMs(a.ts_utc) - parseTimestampMs(b.ts_utc));
+
+        if (normalizedRows.length > 0) {
+            appState.climateSeries = normalizedRows;
+        } else if (appState.latestTemperature && Number.isFinite(parseTimestampMs(appState.latestTemperature.ts_utc))) {
+            appState.climateSeries = [appState.latestTemperature];
+        }
+
         appState.knownSensors = new Set(getKnownSensorKeys());
         appState.lastClimateRefreshMs = now;
 
@@ -1235,6 +1329,9 @@ function updateBillingEstimate(totalConsW, totalProdW) {
     let feedInValueEur = 0;
     let note = '';
 
+    const quality = appState.dataQuality && typeof appState.dataQuality === 'object' ? appState.dataQuality : null;
+    const allowStrongRecommendation = !!(quality && quality.ui_behavior && quality.ui_behavior.allow_strong_recommendation);
+
     if (netGridKwh >= 0) {
         estimatedCostEur = netGridKwh * buyPrice;
         note = `Facture estimee avec tarif achat ${buyPrice.toFixed(3)} EUR/kWh.`;
@@ -1246,6 +1343,10 @@ function updateBillingEstimate(totalConsW, totalProdW) {
         } else {
             note = 'Injection detectee hors calcul facture sans contrat de revente.';
         }
+    }
+
+    if (!allowStrongRecommendation) {
+        note = `${note} Qualite donnees insuffisante: recommandations fortes desactivees.`;
     }
 
     document.getElementById('billing-net-grid').textContent = `${netGridKwh.toFixed(3)} kWh`;
@@ -1513,6 +1614,123 @@ async function loadHistory() {
         const tbody = document.getElementById('history-tbody');
         tbody.innerHTML = '<tr><td colspan="5" class="loading">Erreur</td></tr>';
     }
+}
+
+async function loadHistorySummary(force = false) {
+    const now = Date.now();
+    if (!force && now - appState.lastHistorySummaryRefreshMs < CONFIG.HISTORY_SUMMARY_REFRESH_MS) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`${CONFIG.API_BASE}/api/history/daily-summary`);
+        if (!response.ok) throw new Error('Failed to load history daily summary');
+        const payload = await response.json();
+        renderHistorySummary(payload);
+        appState.lastHistorySummaryRefreshMs = now;
+    } catch (error) {
+        console.error('Error loading daily history summary:', error);
+    }
+}
+
+function setTextById(id, text) {
+    const node = document.getElementById(id);
+    if (node) node.textContent = text;
+}
+
+function fmtDate(dayIso) {
+    if (!dayIso) return '--';
+    const ts = new Date(`${dayIso}T00:00:00Z`);
+    if (!Number.isFinite(ts.getTime())) return String(dayIso);
+    return ts.toLocaleDateString('fr-FR');
+}
+
+function renderHistorySummary(payload) {
+    const high = payload && payload.record_high ? payload.record_high : null;
+    const low = payload && payload.record_low ? payload.record_low : null;
+    const last = payload && payload.last_day ? payload.last_day : null;
+    const yoy = payload && payload.year_over_year ? payload.year_over_year : null;
+
+    setTextById('history-record-high', fmtKwh(Number(high && high.consumption_kwh), 3));
+    setTextById('history-record-high-day', fmtDate(high && high.day_utc));
+
+    setTextById('history-record-low', fmtKwh(Number(low && low.consumption_kwh), 3));
+    setTextById('history-record-low-day', fmtDate(low && low.day_utc));
+
+    setTextById('history-month-avg', fmtKwh(Number(payload && payload.current_month_average_kwh), 3));
+
+    setTextById('history-last-day', fmtKwh(Number(last && last.consumption_kwh), 3));
+    setTextById('history-last-day-date', fmtDate(last && last.day_utc));
+
+    setTextById('history-last7-avg', fmtKwh(Number(payload && payload.last_7_days_average_kwh), 3));
+
+    if (yoy) {
+        const delta = Number(yoy.delta_kwh);
+        const deltaPct = Number(yoy.delta_pct);
+        const deltaLabel = Number.isFinite(delta) ? `${delta >= 0 ? '+' : ''}${delta.toFixed(3)} kWh` : '--';
+        const pctLabel = Number.isFinite(deltaPct) ? `${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)} %` : '--';
+        setTextById('history-yoy-delta', `${deltaLabel} (${pctLabel})`);
+        setTextById('history-yoy-ref', `Ref ${fmtDate(yoy.reference_day_utc)}: ${fmtKwh(Number(yoy.reference_consumption_kwh), 3)}`);
+    } else {
+        setTextById('history-yoy-delta', '--');
+        setTextById('history-yoy-ref', 'Reference indisponible');
+    }
+
+    renderHistoryYearlyChart(Array.isArray(payload && payload.monthly_consumption_last_12) ? payload.monthly_consumption_last_12 : []);
+}
+
+function renderHistoryYearlyChart(rows) {
+    if (typeof Chart === 'undefined') return;
+    const canvas = document.getElementById('history-yearly-chart');
+    if (!canvas) return;
+
+    const labels = rows.map((item) => {
+        const raw = String(item.month || '');
+        const [year, month] = raw.split('-');
+        if (!year || !month) return raw;
+        return `${month}/${year.slice(-2)}`;
+    });
+    const data = rows.map((item) => {
+        const value = Number(item.consumption_kwh);
+        return Number.isFinite(value) ? value : 0;
+    });
+
+    const ctx = canvas.getContext('2d');
+    if (appState.historySummaryChart) {
+        appState.historySummaryChart.destroy();
+    }
+
+    appState.historySummaryChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [
+                {
+                    label: 'Conso mensuelle (kWh)',
+                    data,
+                    backgroundColor: 'rgba(26, 95, 122, 0.75)',
+                    borderColor: 'rgba(13, 61, 82, 1)',
+                    borderWidth: 1,
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            plugins: {
+                legend: { display: false },
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'kWh',
+                    },
+                },
+            },
+        },
+    });
 }
 
 /* ============ Settings ============ */

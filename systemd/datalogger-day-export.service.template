@@ -1,0 +1,14 @@
+[Unit]
+Description=Datalogueur EM06 daily Power Monitor Day Data export
+After=network-online.target datalogger.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__APP_USER__
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=__APP_DIR__/.env
+ExecStart=__APP_DIR__/scripts/export_em06_day_data.sh
+
+[Install]
+WantedBy=multi-user.target

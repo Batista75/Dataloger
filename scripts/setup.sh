@@ -49,6 +49,10 @@ sed -e "s|__APP_DIR__|$APP_DIR|g" -e "s|__APP_USER__|$APP_USER|g" "$SERVICE_TEMP
 info "Installation du service Tuya systemd"
 sed -e "s|__APP_DIR__|$APP_DIR|g" -e "s|__APP_USER__|$APP_USER|g" "$TUYA_SERVICE_TEMPLATE" | sudo tee "$TUYA_SERVICE_TARGET" >/dev/null
 
+info "Installation du timer export journalier EM06"
+chmod +x "$APP_DIR/scripts/export_em06_day_data.sh" "$APP_DIR/scripts/install_day_export_timer.sh"
+"$APP_DIR/scripts/install_day_export_timer.sh"
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now "$SERVICE_NAME"
 
@@ -74,3 +78,4 @@ echo "URL locale: http://$IP_ADDR:8000"
 echo "Test sante: http://$IP_ADDR:8000/health"
 echo "Statut service API: sudo systemctl status $SERVICE_NAME"
 echo "Statut service Tuya: sudo systemctl status $TUYA_SERVICE_NAME"
+echo "Statut timer export: sudo systemctl status datalogger-day-export.timer"

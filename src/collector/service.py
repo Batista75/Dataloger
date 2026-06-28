@@ -107,7 +107,17 @@ class CollectorService:
 	def _apply_left_riemann_correction(self, measurement: Measurement) -> Measurement:
 		current_ts_utc = _parse_ts_utc(measurement.ts_utc)
 		raw_signed_power_w = _extract_signed_power_w(measurement)
-		stable_signed_power_w = self._smooth_and_validate_power(raw_signed_power_w)
+
+		if settings.em06_mode == "refoss_local_socket":
+			stable_signed_power_w = {}
+			for channel in CHANNELS:
+				raw_value = float(raw_signed_power_w.get(channel, 0.0))
+				safe_value = min(max(raw_value, POWER_MIN_W), POWER_MAX_W)
+				stable_signed_power_w[channel] = safe_value
+				self._stable_w_history[channel].append(safe_value)
+				self._confirmed_power_w[channel] = safe_value
+		else:
+			stable_signed_power_w = self._smooth_and_validate_power(raw_signed_power_w)
 
 		if self._riemann_ready:
 			self._apply_20s_integration(stable_signed_power_w, current_ts_utc)
@@ -162,37 +172,21 @@ class CollectorService:
 			return
 
 		elapsed_seconds = (current_ts_utc - self._last_commit_ts_utc).total_seconds()
-		if elapsed_seconds < POWER_INTERVAL_SECONDS:
+		if elapsed_seconds <= 0:
 			return
 
-		steps = int(elapsed_seconds // POWER_INTERVAL_SECONDS)
-		for _ in range(steps):
-			for channel in CHANNELS:
-				stable_w = _mean_tail(self._stable_w_history[channel], WATT_HISTORY_SIZE)
-				energy_delta_kwh = abs(stable_w) * POWER_INTERVAL_SECONDS / 3600000.0
+		for channel in CHANNELS:
+			stable_w = _mean_tail(self._stable_w_history[channel], WATT_HISTORY_SIZE)
+			energy_delta_kwh = abs(stable_w) * elapsed_seconds / 3600000.0
 
-				if stable_w >= 0:
-					self._consumption_index_kwh[channel] += energy_delta_kwh
-					self._kwh20_consumption_hist[channel].append(energy_delta_kwh)
-					self._kwh20_production_hist[channel].append(0.0)
-				else:
-					self._production_index_kwh[channel] += energy_delta_kwh
-					self._kwh20_production_hist[channel].append(energy_delta_kwh)
-					self._kwh20_consumption_hist[channel].append(0.0)
+			if stable_w >= 0:
+				self._consumption_index_kwh[channel] += energy_delta_kwh
+			else:
+				self._production_index_kwh[channel] += energy_delta_kwh
 
-				kwh1h_consumption = _mean_all(self._kwh20_consumption_hist[channel]) * SAMPLES_20S_PER_HOUR
-				kwh1h_production = _mean_all(self._kwh20_production_hist[channel]) * SAMPLES_20S_PER_HOUR
-				self.kwh_1h_consumption[channel] = kwh1h_consumption
-				self.kwh_1h_production[channel] = kwh1h_production
+			self._confirmed_power_w[channel] = stable_signed_power_w[channel]
 
-				self._kwh1h_consumption_hist[channel].append(kwh1h_consumption)
-				self._kwh1h_production_hist[channel].append(kwh1h_production)
-
-				self.kwh_24h_consumption[channel] = _mean_all(self._kwh1h_consumption_hist[channel]) * HOURS_PER_DAY
-				self.kwh_24h_production[channel] = _mean_all(self._kwh1h_production_hist[channel]) * HOURS_PER_DAY
-				self._confirmed_power_w[channel] = stable_signed_power_w[channel]
-
-			self._last_commit_ts_utc += timedelta(seconds=POWER_INTERVAL_SECONDS)
+		self._last_commit_ts_utc = current_ts_utc
 
 
 def _parse_ts_utc(ts_value: object) -> datetime:

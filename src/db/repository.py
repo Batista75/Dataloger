@@ -118,6 +118,67 @@ class MeasurementRepository:
 			rows = conn.execute(query, (from_ts_utc, to_ts_utc, limit)).fetchall()
 		return [dict(row) for row in rows]
 
+	def get_recent(self, limit: int = 3000) -> list[dict[str, Any]]:
+		query = """
+		SELECT ts_utc,
+			a1_production_kwh, a1_consumption_kwh,
+			b1_production_kwh, b1_consumption_kwh,
+			c1_production_kwh, c1_consumption_kwh,
+			a2_production_kwh, a2_consumption_kwh,
+			b2_production_kwh, b2_consumption_kwh,
+			c2_production_kwh, c2_consumption_kwh,
+			total_production_kwh, total_consumption_kwh,
+			voltage_v, frequency_hz, power_factor, quality_flag
+		FROM measurements
+		ORDER BY id DESC
+		LIMIT ?
+		"""
+		with self._connect() as conn:
+			rows = conn.execute(query, (limit,)).fetchall()
+		# Query returns newest first; reverse for chronological processing.
+		return [dict(row) for row in reversed(rows)]
+
+	def get_recent_quality(self, limit: int = 1200) -> list[dict[str, Any]]:
+		query = """
+		SELECT ts_utc,
+			total_production_kwh,
+			total_consumption_kwh,
+			quality_flag
+		FROM measurements
+		ORDER BY id DESC
+		LIMIT ?
+		"""
+		with self._connect() as conn:
+			rows = conn.execute(query, (limit,)).fetchall()
+		return [dict(row) for row in reversed(rows)]
+
+	def get_daily_consumption(self, limit_days: int = 800) -> list[dict[str, Any]]:
+		query = """
+		WITH daily AS (
+			SELECT
+				substr(ts_utc, 1, 10) AS day_utc,
+				MIN(total_consumption_kwh) AS min_cons_kwh,
+				MAX(total_consumption_kwh) AS max_cons_kwh
+			FROM measurements
+			WHERE total_consumption_kwh IS NOT NULL
+			GROUP BY substr(ts_utc, 1, 10)
+		),
+		windowed AS (
+			SELECT
+				day_utc,
+				ROUND(CASE WHEN max_cons_kwh >= min_cons_kwh THEN max_cons_kwh - min_cons_kwh ELSE 0 END, 6) AS daily_consumption_kwh
+			FROM daily
+			ORDER BY day_utc DESC
+			LIMIT ?
+		)
+		SELECT day_utc AS date_utc, daily_consumption_kwh
+		FROM windowed
+		ORDER BY date_utc ASC
+		"""
+		with self._connect() as conn:
+			rows = conn.execute(query, (limit_days,)).fetchall()
+		return [dict(row) for row in rows]
+
 	def log_event(self, level: str, source: str, message: str, ts_utc: str) -> None:
 		with self._connect() as conn:
 			conn.execute(
