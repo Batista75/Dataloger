@@ -31,10 +31,10 @@ const CONFIG = {
     CHANNELS: {
         a1: { name: 'Canal A1', type: 'unused', graph: true },
         b1: { name: 'Canal B1', type: 'unused', graph: true },
-        c1: { name: 'Canal C1', type: 'edf_total', graph: true },
-        a2: { name: 'Canal A2', type: 'generator', graph: true },
-        b2: { name: 'Canal B2', type: 'consumption', graph: true },
-        c2: { name: 'Canal C2', type: 'consumption', graph: true },
+        c1: { name: 'Réseau EDF (C1)', type: 'edf_total', graph: true },
+        a2: { name: 'Photovoltaïque (A2)', type: 'generator', graph: true },
+        b2: { name: 'Consommation B2', type: 'consumption', graph: true },
+        c2: { name: 'Consommation C2', type: 'consumption', graph: true },
     },
 };
 
@@ -291,7 +291,13 @@ function buildInstantPowerSeries(rows) {
             point[`${key}_production_w`] = productionW;
 
             const cfg = getChannelConfig(key);
-            point[`${key}_signed_w`] = cfg.type === 'generator' ? -productionW : consumptionW;
+            if (cfg.type === 'edf_total') {
+                point[`${key}_signed_w`] = consumptionW - productionW;
+            } else if (cfg.type === 'generator') {
+                point[`${key}_signed_w`] = -productionW;
+            } else {
+                point[`${key}_signed_w`] = consumptionW;
+            }
         });
 
         series.push(point);
@@ -574,7 +580,10 @@ function getBusinessTotals(point) {
     });
 
     const consumptionW = edfKeys.length > 0
-        ? edfKeys.reduce((sum, key) => sum + toNumber(point[`${key}_consumption_w`], 0), 0)
+        ? edfKeys.reduce(
+            (sum, key) => sum + toNumber(point[`${key}_consumption_w`], 0) - toNumber(point[`${key}_production_w`], 0),
+            0,
+        )
         : consumptionKeys.reduce((sum, key) => sum + toNumber(point[`${key}_consumption_w`], 0), 0);
 
     const generatorAbsW = generatorKeys.reduce((sum, key) => sum + toNumber(point[`${key}_production_w`], 0), 0);
@@ -807,7 +816,7 @@ function renderTrendChart() {
                 return totals.consumptionW;
             });
             datasets.push({
-                label: 'Total consommation electrique (W)',
+                label: 'Réseau C1 net (W)',
                 data: powerData,
                 borderColor: '#dc2626',
                 backgroundColor: 'transparent',
@@ -826,7 +835,11 @@ function renderTrendChart() {
             const series = aggregateByDailySlots(appState.powerSeries, (point) => point[`${channelKey}_signed_w`]);
             if (!series.some((v) => Number.isFinite(v))) return;
 
-            const typeLabel = cfg.type === 'generator' ? 'Generation' : 'Consommation';
+            const typeLabel = cfg.type === 'generator'
+                ? 'Generation'
+                : cfg.type === 'edf_total'
+                    ? 'Réseau net'
+                    : 'Consommation';
 
             datasets.push({
                 label: `${cfg.name} - ${typeLabel} (W signe)`,
@@ -1262,7 +1275,7 @@ function updateInstantSummary() {
     document.getElementById('consumption-trend').textContent = fmtTrend(currentCons, yCons);
     document.getElementById('production-trend').textContent = fmtTrend(Math.abs(currentGenSigned), Math.abs(yGenSigned));
 
-    updateBillingEstimate(currentCons, currentTotals.generatorAbsW);
+    updateBillingEstimate(currentCons);
 }
 
 function updateChannelInstantCards() {
@@ -1285,7 +1298,7 @@ function updateChannelInstantCards() {
             typeNode.textContent = 'Type: generateur';
             typeNode.classList.add('generator');
         } else if (cfg.type === 'edf_total') {
-            typeNode.textContent = 'Type: consommation totale EDF';
+            typeNode.textContent = 'Type: réseau EDF (référence C1)';
             typeNode.classList.add('edf');
         } else if (cfg.type === 'unused') {
             typeNode.textContent = 'Type: non utilise';
@@ -1318,11 +1331,8 @@ function updateChannelInstantCards() {
     });
 }
 
-function updateBillingEstimate(totalConsW, totalProdW) {
-    const totalConsKwh = totalConsW / 1000;
-    const totalProdKwh = totalProdW / 1000;
-
-    const netGridKwh = totalConsKwh - totalProdKwh;
+function updateBillingEstimate(c1NetSignedW) {
+    const netGridKwh = c1NetSignedW / 1000;
     const buyPrice = Number(CONFIG.BUY_PRICE_KWH) || 0;
     const sellPrice = Number(CONFIG.SELL_PRICE_KWH) || 0.011;
     const hasResale = Boolean(CONFIG.HAS_RESALE_CONTRACT);
@@ -1673,10 +1683,19 @@ function renderHistorySummary(payload) {
 
     setTextById('history-month-avg', fmtKwh(Number(payload && payload.current_month_average_kwh), 3));
 
-    setTextById('history-last-day', fmtKwh(Number(last && last.consumption_kwh), 3));
+    const lastNet = Number(last && (last.c1_net_kwh ?? last.consumption_kwh));
+    setTextById('history-last-day', fmtKwh(lastNet, 3));
     setTextById('history-last-day-date', fmtDate(last && last.day_utc));
 
     setTextById('history-last7-avg', fmtKwh(Number(payload && payload.last_7_days_average_kwh), 3));
+
+    const pvProd = Number(last && last.pv_production_kwh);
+    const autoRate = Number(last && last.autoconsumption_rate_pct);
+    setTextById('history-pv-production', fmtKwh(pvProd, 3));
+    setTextById(
+        'history-autoconsumption-rate',
+        Number.isFinite(autoRate) ? `${autoRate.toFixed(1)} %` : '--',
+    );
 
     if (yoy) {
         const delta = Number(yoy.delta_kwh);
@@ -1690,10 +1709,16 @@ function renderHistorySummary(payload) {
         setTextById('history-yoy-ref', 'Reference indisponible');
     }
 
-    renderHistoryYearlyChart(Array.isArray(payload && payload.monthly_consumption_last_12) ? payload.monthly_consumption_last_12 : []);
+    const monthlyRows = Array.isArray(payload && payload.monthly_consumption_last_12)
+        ? payload.monthly_consumption_last_12
+        : [];
+    const monthlyPv = Array.isArray(payload && payload.monthly_pv_production_last_12)
+        ? payload.monthly_pv_production_last_12
+        : [];
+    renderHistoryYearlyChart(monthlyRows, monthlyPv);
 }
 
-function renderHistoryYearlyChart(rows) {
+function renderHistoryYearlyChart(rows, pvRows = []) {
     if (typeof Chart === 'undefined') return;
     const canvas = document.getElementById('history-yearly-chart');
     if (!canvas) return;
@@ -1704,8 +1729,15 @@ function renderHistoryYearlyChart(rows) {
         if (!year || !month) return raw;
         return `${month}/${year.slice(-2)}`;
     });
-    const data = rows.map((item) => {
+    const importData = rows.map((item) => {
         const value = Number(item.consumption_kwh);
+        return Number.isFinite(value) ? value : 0;
+    });
+    const pvByMonth = new Map(
+        (Array.isArray(pvRows) ? pvRows : []).map((item) => [String(item.month || ''), Number(item.pv_production_kwh)]),
+    );
+    const pvData = rows.map((item) => {
+        const value = pvByMonth.get(String(item.month || ''));
         return Number.isFinite(value) ? value : 0;
     });
 
@@ -1720,10 +1752,17 @@ function renderHistoryYearlyChart(rows) {
             labels,
             datasets: [
                 {
-                    label: 'Conso mensuelle (kWh)',
-                    data,
+                    label: 'Prélèvement réseau C1 (kWh)',
+                    data: importData,
                     backgroundColor: 'rgba(26, 95, 122, 0.75)',
                     borderColor: 'rgba(13, 61, 82, 1)',
+                    borderWidth: 1,
+                },
+                {
+                    label: 'Production PV A2 (kWh)',
+                    data: pvData,
+                    backgroundColor: 'rgba(234, 179, 8, 0.65)',
+                    borderColor: 'rgba(161, 98, 7, 1)',
                     borderWidth: 1,
                 },
             ],
@@ -1732,7 +1771,7 @@ function renderHistoryYearlyChart(rows) {
             responsive: true,
             maintainAspectRatio: true,
             plugins: {
-                legend: { display: false },
+                legend: { display: true },
             },
             scales: {
                 y: {

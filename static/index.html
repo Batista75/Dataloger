@@ -43,14 +43,14 @@
             <!-- Instant Summary Cards -->
             <div class="summary-grid">
                 <div class="summary-card">
-                    <div class="summary-label">Puissance consommation instantanee</div>
+                    <div class="summary-label">Puissance réseau C1 net (instantanée)</div>
                     <div class="summary-value" id="total-consumption-w">-- W</div>
                     <div class="summary-meta">Hier: <span id="consumption-yesterday">-- W</span></div>
                     <div class="summary-meta">Avant-hier: <span id="consumption-daybefore">-- W</span></div>
                     <div class="summary-trend" id="consumption-trend">Tendance: --</div>
                 </div>
                 <div class="summary-card">
-                    <div class="summary-label">Puissance generateur instantanee (signee)</div>
+                    <div class="summary-label">Puissance photovoltaïque A2 (signée)</div>
                     <div class="summary-value" id="total-production-w">-- W</div>
                     <div class="summary-meta">Hier: <span id="production-yesterday">-- W</span></div>
                     <div class="summary-meta">Avant-hier: <span id="production-daybefore">-- W</span></div>
@@ -264,39 +264,49 @@
         <section id="history" class="page">
             <div class="history-summary-grid">
                 <div class="history-summary-card">
-                    <div class="history-summary-label">Record conso la plus haute</div>
+                    <div class="history-summary-label">Record prélèvement réseau C1</div>
                     <div class="history-summary-value" id="history-record-high">-- kWh</div>
                     <div class="history-summary-meta" id="history-record-high-day">--</div>
                 </div>
                 <div class="history-summary-card">
-                    <div class="history-summary-label">Record conso la plus basse</div>
+                    <div class="history-summary-label">Record prélèvement le plus bas</div>
                     <div class="history-summary-value" id="history-record-low">-- kWh</div>
                     <div class="history-summary-meta" id="history-record-low-day">--</div>
                 </div>
                 <div class="history-summary-card">
-                    <div class="history-summary-label">Moyenne mois en cours</div>
+                    <div class="history-summary-label">Moyenne prélèvement (mois en cours)</div>
                     <div class="history-summary-value" id="history-month-avg">-- kWh</div>
                     <div class="history-summary-meta">Depuis le 1er</div>
                 </div>
                 <div class="history-summary-card">
-                    <div class="history-summary-label">Derniere journee</div>
+                    <div class="history-summary-label">Réseau C1 net (dernière journée)</div>
                     <div class="history-summary-value" id="history-last-day">-- kWh</div>
                     <div class="history-summary-meta" id="history-last-day-date">--</div>
                 </div>
                 <div class="history-summary-card">
-                    <div class="history-summary-label">Moyenne 7 derniers jours</div>
+                    <div class="history-summary-label">Moyenne prélèvement (7 jours)</div>
                     <div class="history-summary-value" id="history-last7-avg">-- kWh</div>
                     <div class="history-summary-meta">Glissant</div>
                 </div>
                 <div class="history-summary-card">
-                    <div class="history-summary-label">Comparaison J-1 an</div>
+                    <div class="history-summary-label">Production PV (dernière journée)</div>
+                    <div class="history-summary-value" id="history-pv-production">-- kWh</div>
+                    <div class="history-summary-meta">Canal A2</div>
+                </div>
+                <div class="history-summary-card">
+                    <div class="history-summary-label">Taux autoconsommation PV</div>
+                    <div class="history-summary-value" id="history-autoconsumption-rate">--</div>
+                    <div class="history-summary-meta">Dernière journée</div>
+                </div>
+                <div class="history-summary-card">
+                    <div class="history-summary-label">Comparaison J-1 an (prélèvement)</div>
                     <div class="history-summary-value" id="history-yoy-delta">--</div>
                     <div class="history-summary-meta" id="history-yoy-ref">--</div>
                 </div>
             </div>
 
             <div class="history-chart-container">
-                <h3>Consommation annuelle (12 derniers mois)</h3>
+                <h3>Prélèvement réseau C1 et production PV (12 derniers mois)</h3>
                 <canvas id="history-yearly-chart"></canvas>
             </div>
 
@@ -629,7 +639,7 @@
 
     <!-- App Script (non-blocking, cache-busted) -->
     <script
-        src="/js/app.js?v=20260628b"
+        src="/js/app.js?v=20260628c"
         defer
         onerror="(function(){var t=document.getElementById('status-text');var d=document.getElementById('status-indicator');if(t)t.textContent='Erreur chargement JS';if(d)d.classList.add('error');})();"
     ></script>

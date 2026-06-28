@@ -327,42 +327,64 @@ def quality_latest(minutes: int = Query(default=120, ge=30, le=1440)) -> dict[st
 
 @app.get("/api/history/daily-summary")
 def history_daily_summary(days: int = Query(default=800, ge=60, le=3000)) -> dict[str, Any]:
-	daily_rows = repo.get_daily_consumption(limit_days=days)
+	daily_rows = repo.get_daily_energy_summary(limit_days=days)
 	series: list[dict[str, Any]] = []
 
 	for row in daily_rows:
 		day_raw = str(row.get("date_utc") or "")
-		value = _to_float(row.get("daily_consumption_kwh"))
-		if not day_raw or value is None:
+		grid_import = _to_float(row.get("grid_import_kwh"))
+		c1_net = _to_float(row.get("c1_net_kwh"))
+		if not day_raw or grid_import is None or c1_net is None:
 			continue
 		try:
 			day_obj = date.fromisoformat(day_raw)
 		except ValueError:
 			continue
-		series.append({"date": day_obj, "date_utc": day_raw, "consumption_kwh": round(max(value, 0.0), 6)})
+		series.append(
+			{
+				"date": day_obj,
+				"date_utc": day_raw,
+				"grid_import_kwh": round(grid_import, 6),
+				"grid_export_kwh": round(_to_float(row.get("grid_export_kwh")) or 0.0, 6),
+				"pv_production_kwh": round(_to_float(row.get("pv_production_kwh")) or 0.0, 6),
+				"c1_net_kwh": round(c1_net, 6),
+				"autoconsumption_kwh": round(_to_float(row.get("autoconsumption_kwh")) or 0.0, 6),
+				"autoconsumption_rate_pct": _to_float(row.get("autoconsumption_rate_pct")),
+				# Backward-compatible alias: signed C1 net (EDF reference).
+				"consumption_kwh": round(c1_net, 6),
+			}
+		)
+
+	empty_payload: dict[str, Any] = {
+		"refresh_policy": "daily",
+		"energy_reference": "c1",
+		"generated_day_utc": datetime.now(timezone.utc).date().isoformat(),
+		"record_high": None,
+		"record_low": None,
+		"current_month_average_kwh": None,
+		"last_day": None,
+		"last_7_days_average_kwh": None,
+		"year_over_year": None,
+		"monthly_consumption_last_12": [],
+		"monthly_pv_production_last_12": [],
+	}
 
 	if not series:
-		return {
-			"refresh_policy": "daily",
-			"generated_day_utc": datetime.now(timezone.utc).date().isoformat(),
-			"record_high": None,
-			"record_low": None,
-			"current_month_average_kwh": None,
-			"last_day": None,
-			"last_7_days_average_kwh": None,
-			"year_over_year": None,
-			"monthly_consumption_last_12": [],
-		}
+		return empty_payload
 
 	latest = series[-1]
-	high = max(series, key=lambda item: float(item["consumption_kwh"]))
-	low = min(series, key=lambda item: float(item["consumption_kwh"]))
+	high = max(series, key=lambda item: float(item["grid_import_kwh"]))
+	low = min(series, key=lambda item: float(item["grid_import_kwh"]))
 
 	month_start = latest["date"].replace(day=1)
-	month_values = [float(item["consumption_kwh"]) for item in series if item["date"] >= month_start and item["date"] <= latest["date"]]
+	month_values = [
+		float(item["grid_import_kwh"])
+		for item in series
+		if item["date"] >= month_start and item["date"] <= latest["date"]
+	]
 	month_avg = sum(month_values) / len(month_values) if month_values else None
 
-	last7_values = [float(item["consumption_kwh"]) for item in series[-7:]]
+	last7_values = [float(item["grid_import_kwh"]) for item in series[-7:]]
 	last7_avg = sum(last7_values) / len(last7_values) if last7_values else None
 
 	try:
@@ -374,8 +396,8 @@ def history_daily_summary(days: int = Query(default=800, ge=60, le=3000)) -> dic
 	if yoy_ref is None:
 		yoy_payload: dict[str, Any] | None = None
 	else:
-		ref_value = float(yoy_ref["consumption_kwh"])
-		last_value = float(latest["consumption_kwh"])
+		ref_value = float(yoy_ref["grid_import_kwh"])
+		last_value = float(latest["grid_import_kwh"])
 		pct = ((last_value - ref_value) / ref_value * 100.0) if ref_value > 0 else None
 		yoy_payload = {
 			"reference_day_utc": yoy_ref["date_utc"],
@@ -384,37 +406,51 @@ def history_daily_summary(days: int = Query(default=800, ge=60, le=3000)) -> dic
 			"delta_pct": round(pct, 3) if pct is not None else None,
 		}
 
-	monthly_totals: dict[str, float] = {}
+	monthly_import: dict[str, float] = {}
+	monthly_pv: dict[str, float] = {}
 	for item in series:
 		month_key = item["date"].strftime("%Y-%m")
-		monthly_totals[month_key] = monthly_totals.get(month_key, 0.0) + float(item["consumption_kwh"])
+		monthly_import[month_key] = monthly_import.get(month_key, 0.0) + float(item["grid_import_kwh"])
+		monthly_pv[month_key] = monthly_pv.get(month_key, 0.0) + float(item["pv_production_kwh"])
 
-	sorted_months = sorted(monthly_totals.keys())
+	sorted_months = sorted(monthly_import.keys())
 	last_12 = sorted_months[-12:]
 	monthly_payload = [
-		{"month": month, "consumption_kwh": round(monthly_totals[month], 6)}
+		{"month": month, "consumption_kwh": round(monthly_import[month], 6)}
+		for month in last_12
+	]
+	monthly_pv_payload = [
+		{"month": month, "pv_production_kwh": round(monthly_pv.get(month, 0.0), 6)}
 		for month in last_12
 	]
 
 	return {
 		"refresh_policy": "daily",
+		"energy_reference": "c1",
 		"generated_day_utc": datetime.now(timezone.utc).date().isoformat(),
 		"record_high": {
 			"day_utc": high["date_utc"],
-			"consumption_kwh": round(float(high["consumption_kwh"]), 6),
+			"consumption_kwh": round(float(high["grid_import_kwh"]), 6),
 		},
 		"record_low": {
 			"day_utc": low["date_utc"],
-			"consumption_kwh": round(float(low["consumption_kwh"]), 6),
+			"consumption_kwh": round(float(low["grid_import_kwh"]), 6),
 		},
 		"current_month_average_kwh": round(month_avg, 6) if month_avg is not None else None,
 		"last_day": {
 			"day_utc": latest["date_utc"],
-			"consumption_kwh": round(float(latest["consumption_kwh"]), 6),
+			"c1_net_kwh": latest["c1_net_kwh"],
+			"grid_import_kwh": latest["grid_import_kwh"],
+			"grid_export_kwh": latest["grid_export_kwh"],
+			"pv_production_kwh": latest["pv_production_kwh"],
+			"autoconsumption_kwh": latest["autoconsumption_kwh"],
+			"autoconsumption_rate_pct": latest["autoconsumption_rate_pct"],
+			"consumption_kwh": latest["c1_net_kwh"],
 		},
 		"last_7_days_average_kwh": round(last7_avg, 6) if last7_avg is not None else None,
 		"year_over_year": yoy_payload,
 		"monthly_consumption_last_12": monthly_payload,
+		"monthly_pv_production_last_12": monthly_pv_payload,
 	}
 
 

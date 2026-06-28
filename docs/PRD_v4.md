@@ -152,14 +152,27 @@ Sondes Tuya ──script──────►  fichiers JSON/CSV ─────
 
 ### Canaux EM06P
 
-| Canal | Rôle métier par défaut (UI) |
-|-------|----------------------------|
-| c1 | Consommation totale EDF |
-| a2 | Générateur (puissance signée) |
-| b2, c2 | Consommation |
-| a1, b1 | Non utilisés (masqués) |
+| Canal | Rôle métier (installation) |
+|-------|------------------------------|
+| **c1** | **Réseau EDF** — mesure à la sortie du circuit électrique ; référence des kWh facturés (net = prélèvement − injection ; **négatif** si excédent PV) |
+| **a2** | **Photovoltaïque** — générateur (production) |
+| **b2, c2** | Consommateurs monitorés |
+| **a1, b1** | Non utilisés (masqués) |
 
-Configurable par l'utilisateur dans Paramètres (localStorage).
+### Bilan énergétique
+
+En règle générale :
+
+`C1 ≈ B2 + A2 + C2 + appareils non monitorés`
+
+- **C1** est la référence EDF (prélèvement réseau − injection réseau).
+- Si la production PV (**A2**) dépasse la consommation totale du foyer, **C1 devient négatif** (excédent exporté).
+- **Autoconsommation PV** (journalière) : `max(0, production_A2 − injection_C1)`.
+- **Taux d'autoconsommation** : `autoconsommation / production_A2 × 100` (si production > 0).
+
+L'historique journalier et le graphe 12 mois s'appuient sur **C1** (prélèvement réseau) et **A2** (production PV), pas sur la somme brute de tous les canaux.
+
+Configurable par l'utilisateur dans Paramètres (localStorage) pour les libellés et l'affichage graphe.
 
 ### Pipeline de traitement
 

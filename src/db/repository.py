@@ -152,32 +152,128 @@ class MeasurementRepository:
 			rows = conn.execute(query, (limit,)).fetchall()
 		return [dict(row) for row in reversed(rows)]
 
-	def get_daily_consumption(self, limit_days: int = 800) -> list[dict[str, Any]]:
+	def get_daily_energy_summary(self, limit_days: int = 800) -> list[dict[str, Any]]:
+		# C1 is the EDF grid reference (import - export, signed).
+		# A2 is PV production. Live rows use cumulative indexes (daily = max-min);
+		# imported history rows (quality_flag=2) store daily totals directly.
 		query = """
 		WITH daily AS (
 			SELECT
 				substr(ts_utc, 1, 10) AS day_utc,
-				MIN(total_consumption_kwh) AS min_cons_kwh,
-				MAX(total_consumption_kwh) AS max_cons_kwh
+				SUM(CASE WHEN quality_flag = 2 THEN 1 ELSE 0 END) AS imported_rows,
+				SUM(CASE WHEN quality_flag != 2 THEN 1 ELSE 0 END) AS live_rows,
+				MAX(CASE WHEN quality_flag = 2 THEN c1_consumption_kwh END) AS imp_c1_cons,
+				MIN(CASE WHEN quality_flag != 2 THEN c1_consumption_kwh END) AS live_c1_cons_min,
+				MAX(CASE WHEN quality_flag != 2 THEN c1_consumption_kwh END) AS live_c1_cons_max,
+				MAX(CASE WHEN quality_flag = 2 THEN c1_production_kwh END) AS imp_c1_prod,
+				MIN(CASE WHEN quality_flag != 2 THEN c1_production_kwh END) AS live_c1_prod_min,
+				MAX(CASE WHEN quality_flag != 2 THEN c1_production_kwh END) AS live_c1_prod_max,
+				MAX(CASE WHEN quality_flag = 2 THEN a2_production_kwh END) AS imp_a2_prod,
+				MIN(CASE WHEN quality_flag != 2 THEN a2_production_kwh END) AS live_a2_prod_min,
+				MAX(CASE WHEN quality_flag != 2 THEN a2_production_kwh END) AS live_a2_prod_max
 			FROM measurements
-			WHERE total_consumption_kwh IS NOT NULL
 			GROUP BY substr(ts_utc, 1, 10)
 		),
-		windowed AS (
+		computed AS (
 			SELECT
 				day_utc,
-				ROUND(CASE WHEN max_cons_kwh >= min_cons_kwh THEN max_cons_kwh - min_cons_kwh ELSE 0 END, 6) AS daily_consumption_kwh
+				CASE
+					WHEN live_rows >= 2
+						AND live_c1_cons_max IS NOT NULL
+						AND live_c1_cons_min IS NOT NULL
+						AND live_c1_cons_max >= live_c1_cons_min
+						THEN live_c1_cons_max - live_c1_cons_min
+					WHEN imported_rows > 0 AND imp_c1_cons IS NOT NULL
+						THEN imp_c1_cons
+					WHEN live_rows > 0
+						AND live_c1_cons_max IS NOT NULL
+						AND live_c1_cons_min IS NOT NULL
+						AND live_c1_cons_max >= live_c1_cons_min
+						THEN live_c1_cons_max - live_c1_cons_min
+					ELSE 0
+				END AS grid_import_kwh,
+				CASE
+					WHEN live_rows >= 2
+						AND live_c1_prod_max IS NOT NULL
+						AND live_c1_prod_min IS NOT NULL
+						AND live_c1_prod_max >= live_c1_prod_min
+						THEN live_c1_prod_max - live_c1_prod_min
+					WHEN imported_rows > 0 AND imp_c1_prod IS NOT NULL
+						THEN imp_c1_prod
+					WHEN live_rows > 0
+						AND live_c1_prod_max IS NOT NULL
+						AND live_c1_prod_min IS NOT NULL
+						AND live_c1_prod_max >= live_c1_prod_min
+						THEN live_c1_prod_max - live_c1_prod_min
+					ELSE 0
+				END AS grid_export_kwh,
+				CASE
+					WHEN live_rows >= 2
+						AND live_a2_prod_max IS NOT NULL
+						AND live_a2_prod_min IS NOT NULL
+						AND live_a2_prod_max >= live_a2_prod_min
+						THEN live_a2_prod_max - live_a2_prod_min
+					WHEN imported_rows > 0 AND imp_a2_prod IS NOT NULL
+						THEN imp_a2_prod
+					WHEN live_rows > 0
+						AND live_a2_prod_max IS NOT NULL
+						AND live_a2_prod_min IS NOT NULL
+						AND live_a2_prod_max >= live_a2_prod_min
+						THEN live_a2_prod_max - live_a2_prod_min
+					ELSE 0
+				END AS pv_production_kwh
 			FROM daily
+		),
+		enriched AS (
+			SELECT
+				day_utc,
+				ROUND(grid_import_kwh, 6) AS grid_import_kwh,
+				ROUND(grid_export_kwh, 6) AS grid_export_kwh,
+				ROUND(pv_production_kwh, 6) AS pv_production_kwh,
+				ROUND(grid_import_kwh - grid_export_kwh, 6) AS c1_net_kwh,
+				ROUND(
+					CASE
+						WHEN pv_production_kwh - grid_export_kwh > 0
+							THEN pv_production_kwh - grid_export_kwh
+						ELSE 0
+					END,
+				6) AS autoconsumption_kwh,
+				CASE
+					WHEN pv_production_kwh > 0
+						THEN ROUND(
+							100.0 * CASE
+								WHEN pv_production_kwh - grid_export_kwh > 0
+									THEN pv_production_kwh - grid_export_kwh
+								ELSE 0
+							END / pv_production_kwh,
+						3)
+					ELSE NULL
+				END AS autoconsumption_rate_pct
+			FROM computed
+		),
+		windowed AS (
+			SELECT *
+			FROM enriched
 			ORDER BY day_utc DESC
 			LIMIT ?
 		)
-		SELECT day_utc AS date_utc, daily_consumption_kwh
+		SELECT
+			day_utc AS date_utc,
+			grid_import_kwh,
+			grid_export_kwh,
+			pv_production_kwh,
+			c1_net_kwh,
+			autoconsumption_kwh,
+			autoconsumption_rate_pct
 		FROM windowed
 		ORDER BY date_utc ASC
 		"""
 		with self._connect() as conn:
 			rows = conn.execute(query, (limit_days,)).fetchall()
 		return [dict(row) for row in rows]
+
+	def get_daily_consumption(self, limit_days: int = 800) -> list[dict[str, Any]]:
+		return self.get_daily_energy_summary(limit_days=limit_days)
 
 	def log_event(self, level: str, source: str, message: str, ts_utc: str) -> None:
 		with self._connect() as conn:
