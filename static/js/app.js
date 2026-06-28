@@ -18,7 +18,9 @@ const CONFIG = {
     HISTORY_LIMIT: 100,
     HISTORY_SUMMARY_REFRESH_MS: 24 * 60 * 60 * 1000,
     QUALITY_REFRESH_MS: 5 * 60 * 1000,
+    HISTORY_PAGE_SIZE: 31,
     BUY_PRICE_KWH: 0.25,
+    SURPLUS_PRICE_KWH: 0,
     SELL_PRICE_KWH: 0.011,
     HAS_RESALE_CONTRACT: false,
     UNIFIED_CHART_MODE: 'power_temp',
@@ -31,7 +33,7 @@ const CONFIG = {
     CHANNELS: {
         a1: { name: 'Canal A1', type: 'unused', graph: true },
         b1: { name: 'Canal B1', type: 'unused', graph: true },
-        c1: { name: 'Réseau EDF (C1)', type: 'edf_total', graph: true },
+        c1: { name: 'Consommation totale EDF (C1)', type: 'edf_total', graph: true },
         a2: { name: 'Photovoltaïque (A2)', type: 'generator', graph: true },
         b2: { name: 'Consommation B2', type: 'consumption', graph: true },
         c2: { name: 'Consommation C2', type: 'consumption', graph: true },
@@ -62,6 +64,9 @@ let appState = {
     dataQuality: null,
     knownSensors: new Set(),
     unifiedHiddenDatasets: {},
+    dailyEnergySeries: [],
+    todayMeasurementRows: [],
+    todayEnergy: null,
 };
 
 function getDefaultSelectedGraphChannels() {
@@ -138,6 +143,87 @@ function fmtTrend(current, previous) {
     if (ratio >= 1.05) return 'Tendance: ↑ hausse';
     if (ratio <= 0.95) return 'Tendance: ↓ baisse';
     return 'Tendance: → stable';
+}
+
+function fmtPct(value) {
+    if (!Number.isFinite(value)) return '-- %';
+    return `${Number(value).toFixed(1)} %`;
+}
+
+function getLocalDayStartIso() {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+}
+
+function localDateStringToUtcIso(dateStr, endOfDay = false) {
+    if (!dateStr) return '';
+    const parts = String(dateStr).split('-').map(Number);
+    if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return '';
+    const [year, month, day] = parts;
+    const dt = endOfDay
+        ? new Date(year, month - 1, day, 23, 59, 59, 999)
+        : new Date(year, month - 1, day, 0, 0, 0, 0);
+    return dt.toISOString();
+}
+
+function computeDailyKwhFromRows(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+        return { c1NetKwh: 0, a2ProdKwh: 0 };
+    }
+    const first = rows[0];
+    const last = rows[rows.length - 1];
+    const c1Import = Math.max(0, toNumber(last.c1_consumption_kwh) - toNumber(first.c1_consumption_kwh));
+    const c1Export = Math.max(0, toNumber(last.c1_production_kwh) - toNumber(first.c1_production_kwh));
+    const c1NetKwh = c1Import - c1Export;
+    const a2ProdKwh = Math.max(0, toNumber(last.a2_production_kwh) - toNumber(first.a2_production_kwh));
+    return { c1NetKwh, a2ProdKwh };
+}
+
+function computeEnergyMetrics(c1NetKwh, a2ProdKwh) {
+    const c1 = toNumber(c1NetKwh, 0);
+    const a2 = Math.max(0, toNumber(a2ProdKwh, 0));
+    const consoReelle = c1 + a2;
+    const consoFact = Math.max(0, c1);
+    const surplus = c1 < 0 ? Math.abs(c1) : 0;
+    const autoconso = a2 - surplus;
+    const tauxAutoconso = a2 > 0 ? (autoconso / a2) * 100 : NaN;
+    const tauxAutoproduction = consoReelle > 0 ? (autoconso / consoReelle) * 100 : NaN;
+    return {
+        c1NetKwh: c1,
+        a2ProdKwh: a2,
+        consoReelle,
+        consoFact,
+        surplus,
+        autoconso,
+        tauxAutoconso,
+        tauxAutoproduction,
+    };
+}
+
+function computeDayBillEur(consoFact, surplus) {
+    const buyPrice = Number(CONFIG.BUY_PRICE_KWH) || 0;
+    const surplusPrice = Number(CONFIG.SURPLUS_PRICE_KWH) || 0;
+    return consoFact * buyPrice - surplus * surplusPrice;
+}
+
+function monthKeyFromDate(dateObj) {
+    return `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function formatMonthLabel(monthKey) {
+    if (!monthKey) return '--';
+    const [year, month] = String(monthKey).split('-');
+    if (!year || !month) return monthKey;
+    return `${month}/${year}`;
+}
+
+function sumMonthBillEur(series, monthKey) {
+    return (Array.isArray(series) ? series : [])
+        .filter((row) => String(row.date_utc || '').startsWith(`${monthKey}-`))
+        .reduce((sum, row) => {
+            const metrics = computeEnergyMetrics(row.c1_net_kwh, row.pv_production_kwh);
+            return sum + computeDayBillEur(metrics.consoFact, metrics.surplus);
+        }, 0);
 }
 
 function getChannelConfig(key) {
@@ -657,6 +743,7 @@ async function updateAllData() {
         }
 
         await refreshPowerAnalytics(false);
+        await refreshTodayEnergy();
         await refreshClimateAnalytics(false);
         updateFooter();
     } catch (error) {
@@ -788,12 +875,43 @@ async function refreshPowerAnalytics(force) {
         appState.latestPoint = filteredSeries.length ? filteredSeries[filteredSeries.length - 1] : null;
         appState.lastPowerRefreshMs = now;
 
-        updateInstantSummary();
         updateChannelInstantCards();
         renderTrendChart();
     } catch (error) {
         console.error('Error loading instant analytics:', error);
     }
+}
+
+async function refreshTodayEnergy() {
+    try {
+        const from = getLocalDayStartIso();
+        const response = await fetch(
+            `${CONFIG.API_BASE}/api/measurements?from_ts_utc=${encodeURIComponent(from)}&limit=10000`,
+        );
+        if (!response.ok) throw new Error('Failed to load today energy');
+
+        const payload = await response.json();
+        const rows = Array.isArray(payload.data) ? payload.data : [];
+        appState.todayMeasurementRows = rows;
+        const { c1NetKwh, a2ProdKwh } = computeDailyKwhFromRows(rows);
+        appState.todayEnergy = computeEnergyMetrics(c1NetKwh, a2ProdKwh);
+        updateEnergyDashboard();
+    } catch (error) {
+        console.error('Error loading today energy:', error);
+    }
+}
+
+function updateEnergyDashboard() {
+    const metrics = appState.todayEnergy || computeEnergyMetrics(0, 0);
+    const billEur = computeDayBillEur(metrics.consoFact, metrics.surplus);
+
+    setTextById('energy-conso-reelle', fmtKwh(metrics.consoReelle, 3));
+    setTextById('energy-conso-fact', fmtKwh(metrics.consoFact, 3));
+    setTextById('energy-surplus', fmtKwh(metrics.surplus, 3));
+    setTextById('energy-autoconso', fmtKwh(metrics.autoconso, 3));
+    setTextById('energy-taux-autoconso', fmtPct(metrics.tauxAutoconso));
+    setTextById('energy-taux-autoproduction', fmtPct(metrics.tauxAutoproduction));
+    setTextById('energy-facture-jour', `${billEur.toFixed(3)} EUR`);
 }
 
 function renderTrendChart() {
@@ -1244,40 +1362,6 @@ function updateDashboard(measurement) {
     appState.lastUpdate = measurement.ts_utc;
 }
 
-function updateInstantSummary() {
-    const point = appState.latestPoint;
-    if (!point) return;
-
-    const latestTs = new Date(point.ts_utc);
-    const yesterday = findClosestReferencePoint(appState.powerSeries, latestTs, 1);
-    const dayBefore = findClosestReferencePoint(appState.powerSeries, latestTs, 2);
-
-    const currentTotals = getBusinessTotals(point);
-    const yesterdayTotals = getBusinessTotals(yesterday);
-    const dayBeforeTotals = getBusinessTotals(dayBefore);
-
-    const currentCons = currentTotals.consumptionW;
-    const yCons = yesterdayTotals.consumptionW;
-    const d2Cons = dayBeforeTotals.consumptionW;
-
-    const currentGenSigned = currentTotals.generatorSignedW;
-    const yGenSigned = yesterdayTotals.generatorSignedW;
-    const d2GenSigned = dayBeforeTotals.generatorSignedW;
-
-    document.getElementById('total-consumption-w').textContent = fmtW(currentCons);
-    document.getElementById('total-production-w').textContent = fmtW(currentGenSigned);
-
-    document.getElementById('consumption-yesterday').textContent = fmtW(yCons);
-    document.getElementById('consumption-daybefore').textContent = fmtW(d2Cons);
-    document.getElementById('production-yesterday').textContent = fmtW(yGenSigned);
-    document.getElementById('production-daybefore').textContent = fmtW(d2GenSigned);
-
-    document.getElementById('consumption-trend').textContent = fmtTrend(currentCons, yCons);
-    document.getElementById('production-trend').textContent = fmtTrend(Math.abs(currentGenSigned), Math.abs(yGenSigned));
-
-    updateBillingEstimate(currentCons);
-}
-
 function updateChannelInstantCards() {
     const point = appState.latestPoint;
     if (!point) return;
@@ -1298,7 +1382,7 @@ function updateChannelInstantCards() {
             typeNode.textContent = 'Type: generateur';
             typeNode.classList.add('generator');
         } else if (cfg.type === 'edf_total') {
-            typeNode.textContent = 'Type: réseau EDF (référence C1)';
+            typeNode.textContent = 'Type: consommation totale EDF';
             typeNode.classList.add('edf');
         } else if (cfg.type === 'unused') {
             typeNode.textContent = 'Type: non utilise';
@@ -1331,40 +1415,21 @@ function updateChannelInstantCards() {
     });
 }
 
-function updateBillingEstimate(c1NetSignedW) {
-    const netGridKwh = c1NetSignedW / 1000;
-    const buyPrice = Number(CONFIG.BUY_PRICE_KWH) || 0;
-    const sellPrice = Number(CONFIG.SELL_PRICE_KWH) || 0.011;
-    const hasResale = Boolean(CONFIG.HAS_RESALE_CONTRACT);
+/* ============ History helpers ============ */
+function getHistoryDateRange() {
+    const fromInput = document.getElementById('from-date');
+    const toInput = document.getElementById('to-date');
+    const fromStr = appState.selectedFromDate || (fromInput ? fromInput.value : '') || '';
+    const toStr = appState.selectedToDate || (toInput ? toInput.value : '') || '';
+    return { fromStr, toStr };
+}
 
-    let estimatedCostEur = 0;
-    let feedInValueEur = 0;
-    let note = '';
-
-    const quality = appState.dataQuality && typeof appState.dataQuality === 'object' ? appState.dataQuality : null;
-    const allowStrongRecommendation = !!(quality && quality.ui_behavior && quality.ui_behavior.allow_strong_recommendation);
-
-    if (netGridKwh >= 0) {
-        estimatedCostEur = netGridKwh * buyPrice;
-        note = `Facture estimee avec tarif achat ${buyPrice.toFixed(3)} EUR/kWh.`;
-    } else {
-        const exportedKwh = Math.abs(netGridKwh);
-        if (hasResale) {
-            feedInValueEur = exportedKwh * sellPrice;
-            note = `Injection valorisee a ${sellPrice.toFixed(3)} EUR/kWh (contrat de revente actif).`;
-        } else {
-            note = 'Injection detectee hors calcul facture sans contrat de revente.';
-        }
-    }
-
-    if (!allowStrongRecommendation) {
-        note = `${note} Qualite donnees insuffisante: recommandations fortes desactivees.`;
-    }
-
-    document.getElementById('billing-net-grid').textContent = `${netGridKwh.toFixed(3)} kWh`;
-    document.getElementById('billing-estimated-cost').textContent = `${estimatedCostEur.toFixed(3)} EUR`;
-    document.getElementById('billing-feed-in-value').textContent = `${feedInValueEur.toFixed(3)} EUR`;
-    document.getElementById('billing-note').textContent = note;
+function filterDailySeriesByRange(series, fromStr, toStr) {
+    if (!fromStr || !toStr) return Array.isArray(series) ? series : [];
+    return (Array.isArray(series) ? series : []).filter((row) => {
+        const day = String(row.date_utc || '');
+        return day >= fromStr && day <= toStr;
+    });
 }
 
 function updateSystemInfo(status) {
@@ -1562,6 +1627,8 @@ function initializeDatepickers() {
 
     toInput.valueAsDate = now;
     fromInput.valueAsDate = sevenDaysAgo;
+    appState.selectedFromDate = fromInput.value;
+    appState.selectedToDate = toInput.value;
 
     applyButton.addEventListener('click', () => {
         appState.selectedFromDate = fromInput.value;
@@ -1573,70 +1640,73 @@ function initializeDatepickers() {
     prevButton.addEventListener('click', () => {
         if (appState.historyPage > 0) {
             appState.historyPage -= 1;
-            loadHistory();
+            renderHistoryTablePage();
         }
     });
 
     nextButton.addEventListener('click', () => {
-        appState.historyPage += 1;
-        loadHistory();
+        const totalPages = Math.max(1, Math.ceil(appState.historyTableRows.length / CONFIG.HISTORY_PAGE_SIZE));
+        if (appState.historyPage < totalPages - 1) {
+            appState.historyPage += 1;
+            renderHistoryTablePage();
+        }
     });
 }
 
 async function loadHistory() {
     try {
-        let url = `${CONFIG.API_BASE}/api/measurements?limit=${CONFIG.HISTORY_LIMIT}`;
-
-        if (appState.selectedFromDate && appState.selectedToDate) {
-            const from = new Date(appState.selectedFromDate).toISOString();
-            const to = new Date(appState.selectedToDate);
-            to.setHours(23, 59, 59, 999);
-            const toIso = to.toISOString();
-            url = `${CONFIG.API_BASE}/api/measurements?from_ts_utc=${from}&to_ts_utc=${toIso}&limit=${CONFIG.HISTORY_LIMIT}`;
-        } else {
-            const now = new Date();
-            const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-            url = `${CONFIG.API_BASE}/api/measurements?from_ts_utc=${sevenDaysAgo.toISOString()}&to_ts_utc=${now.toISOString()}&limit=${CONFIG.HISTORY_LIMIT}`;
+        if (!appState.dailyEnergySeries.length) {
+            await loadHistorySummary(true);
         }
 
-        const response = await fetch(url);
-        if (!response.ok) throw new Error('Failed to load history');
-
-        const data = await response.json();
-        const measurements = (data.data || []).reverse();
-
-        const tbody = document.getElementById('history-tbody');
-        tbody.innerHTML = '';
-
-        if (measurements.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="loading">Aucune donnee</td></tr>';
-            return;
-        }
-
-        measurements.forEach((m) => {
-            const row = document.createElement('tr');
-            const date = new Date(m.ts_utc);
-            const time = date.toLocaleTimeString('fr-FR');
-            const prod = toNumber(m.total_production_kwh, 0);
-            const cons = toNumber(m.total_consumption_kwh, 0);
-            const voltage = toNumber(m.voltage_v, 0);
-            const pf = toNumber(m.power_factor, 0);
-
-            row.innerHTML = `
-                <td>${time}</td>
-                <td>${prod.toFixed(3)}</td>
-                <td>${cons.toFixed(3)}</td>
-                <td>${voltage.toFixed(1)}</td>
-                <td>${pf.toFixed(3)}</td>
-            `;
-            tbody.appendChild(row);
-        });
-
-        document.getElementById('page-info').textContent = `${measurements.length} mesures affichees`;
+        const { fromStr, toStr } = getHistoryDateRange();
+        const filtered = filterDailySeriesByRange(appState.dailyEnergySeries, fromStr, toStr);
+        appState.historyTableRows = [...filtered].reverse();
+        appState.historyPage = Math.min(appState.historyPage, Math.max(0, Math.ceil(appState.historyTableRows.length / CONFIG.HISTORY_PAGE_SIZE) - 1));
+        renderHistoryTablePage();
     } catch (error) {
         console.error('Error loading history:', error);
         const tbody = document.getElementById('history-tbody');
-        tbody.innerHTML = '<tr><td colspan="5" class="loading">Erreur</td></tr>';
+        if (tbody) tbody.innerHTML = '<tr><td colspan="8" class="loading">Erreur</td></tr>';
+    }
+}
+
+function renderHistoryTablePage() {
+    const tbody = document.getElementById('history-tbody');
+    const pageInfo = document.getElementById('page-info');
+    if (!tbody) return;
+
+    const rows = appState.historyTableRows || [];
+    const pageSize = CONFIG.HISTORY_PAGE_SIZE;
+    const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+    const page = Math.min(appState.historyPage, totalPages - 1);
+    const slice = rows.slice(page * pageSize, (page + 1) * pageSize);
+
+    tbody.innerHTML = '';
+    if (slice.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="loading">Aucune donnee sur cette periode</td></tr>';
+        if (pageInfo) pageInfo.textContent = '0 jour(s)';
+        return;
+    }
+
+    slice.forEach((dayRow) => {
+        const metrics = computeEnergyMetrics(dayRow.c1_net_kwh, dayRow.pv_production_kwh);
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td>${fmtDate(dayRow.date_utc)}</td>
+            <td>${metrics.c1NetKwh.toFixed(3)}</td>
+            <td>${metrics.a2ProdKwh.toFixed(3)}</td>
+            <td>${metrics.consoReelle.toFixed(3)}</td>
+            <td>${metrics.consoFact.toFixed(3)}</td>
+            <td>${metrics.surplus.toFixed(3)}</td>
+            <td>${metrics.autoconso.toFixed(3)}</td>
+            <td>${fmtPct(metrics.tauxAutoconso)}</td>
+        `;
+        tbody.appendChild(row);
+    });
+
+    if (pageInfo) {
+        pageInfo.textContent = `Page ${page + 1}/${totalPages} — ${rows.length} jour(s)`;
     }
 }
 
@@ -1650,8 +1720,12 @@ async function loadHistorySummary(force = false) {
         const response = await fetch(`${CONFIG.API_BASE}/api/history/daily-summary`);
         if (!response.ok) throw new Error('Failed to load history daily summary');
         const payload = await response.json();
+        appState.dailyEnergySeries = Array.isArray(payload.daily_energy_series) ? payload.daily_energy_series : [];
         renderHistorySummary(payload);
         appState.lastHistorySummaryRefreshMs = now;
+        if (appState.currentPage === 'history') {
+            loadHistory();
+        }
     } catch (error) {
         console.error('Error loading daily history summary:', error);
     }
@@ -1670,43 +1744,34 @@ function fmtDate(dayIso) {
 }
 
 function renderHistorySummary(payload) {
-    const high = payload && payload.record_high ? payload.record_high : null;
-    const low = payload && payload.record_low ? payload.record_low : null;
-    const last = payload && payload.last_day ? payload.last_day : null;
-    const yoy = payload && payload.year_over_year ? payload.year_over_year : null;
-
-    setTextById('history-record-high', fmtKwh(Number(high && high.consumption_kwh), 3));
-    setTextById('history-record-high-day', fmtDate(high && high.day_utc));
-
-    setTextById('history-record-low', fmtKwh(Number(low && low.consumption_kwh), 3));
-    setTextById('history-record-low-day', fmtDate(low && low.day_utc));
-
     setTextById('history-month-avg', fmtKwh(Number(payload && payload.current_month_average_kwh), 3));
 
-    const lastNet = Number(last && (last.c1_net_kwh ?? last.consumption_kwh));
-    setTextById('history-last-day', fmtKwh(lastNet, 3));
-    setTextById('history-last-day-date', fmtDate(last && last.day_utc));
+    const series = appState.dailyEnergySeries.length
+        ? appState.dailyEnergySeries
+        : (Array.isArray(payload && payload.daily_energy_series) ? payload.daily_energy_series : []);
 
-    setTextById('history-last7-avg', fmtKwh(Number(payload && payload.last_7_days_average_kwh), 3));
+    const now = new Date();
+    const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const prevMonthKey = monthKeyFromDate(prevMonthDate);
+    const prevYearMonthKey = `${prevMonthDate.getFullYear() - 1}-${String(prevMonthDate.getMonth() + 1).padStart(2, '0')}`;
 
-    const pvProd = Number(last && last.pv_production_kwh);
-    const autoRate = Number(last && last.autoconsumption_rate_pct);
-    setTextById('history-pv-production', fmtKwh(pvProd, 3));
-    setTextById(
-        'history-autoconsumption-rate',
-        Number.isFinite(autoRate) ? `${autoRate.toFixed(1)} %` : '--',
-    );
+    const prevMonthBill = sumMonthBillEur(series, prevMonthKey);
+    const prevYearSameMonthBill = sumMonthBillEur(series, prevYearMonthKey);
 
-    if (yoy) {
-        const delta = Number(yoy.delta_kwh);
-        const deltaPct = Number(yoy.delta_pct);
-        const deltaLabel = Number.isFinite(delta) ? `${delta >= 0 ? '+' : ''}${delta.toFixed(3)} kWh` : '--';
-        const pctLabel = Number.isFinite(deltaPct) ? `${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)} %` : '--';
-        setTextById('history-yoy-delta', `${deltaLabel} (${pctLabel})`);
-        setTextById('history-yoy-ref', `Ref ${fmtDate(yoy.reference_day_utc)}: ${fmtKwh(Number(yoy.reference_consumption_kwh), 3)}`);
+    setTextById('history-prev-month-bill', `${prevMonthBill.toFixed(2)} EUR`);
+    setTextById('history-prev-month-label', formatMonthLabel(prevMonthKey));
+
+    if (prevYearSameMonthBill > 0) {
+        const pct = ((prevMonthBill - prevYearSameMonthBill) / prevYearSameMonthBill) * 100;
+        const sign = pct >= 0 ? '+' : '';
+        setTextById('history-bill-yoy-pct', `${sign}${pct.toFixed(1)} %`);
+        setTextById(
+            'history-bill-yoy-ref',
+            `${formatMonthLabel(prevYearMonthKey)}: ${prevYearSameMonthBill.toFixed(2)} EUR`,
+        );
     } else {
-        setTextById('history-yoy-delta', '--');
-        setTextById('history-yoy-ref', 'Reference indisponible');
+        setTextById('history-bill-yoy-pct', '--');
+        setTextById('history-bill-yoy-ref', 'Reference indisponible');
     }
 
     const monthlyRows = Array.isArray(payload && payload.monthly_consumption_last_12)
@@ -1803,6 +1868,7 @@ function loadSettings() {
         CONFIG.REFRESH_INTERVAL = settings.refreshInterval || 3000;
         CONFIG.CHART_HOURS = settings.chartHours || 24;
         CONFIG.BUY_PRICE_KWH = settings.buyPriceKwh ?? 0.25;
+        CONFIG.SURPLUS_PRICE_KWH = settings.surplusPriceKwh ?? 0;
         CONFIG.SELL_PRICE_KWH = settings.sellPriceKwh ?? 0.011;
         CONFIG.HAS_RESALE_CONTRACT = Boolean(settings.hasResaleContract);
         CONFIG.UNIFIED_CHART_MODE = settings.unifiedChartMode === 'temp_humidity' ? 'temp_humidity' : 'power_temp';
@@ -1857,18 +1923,22 @@ function loadSettings() {
         const refreshInput = document.getElementById('refresh-interval');
         const chartHoursInput = document.getElementById('chart-hours');
         const buyInput = document.getElementById('buy-price-kwh');
+        const surplusInput = document.getElementById('surplus-price-kwh');
         const sellInput = document.getElementById('sell-price-kwh');
         const resaleInput = document.getElementById('has-resale-contract');
         if (refreshInput) refreshInput.value = CONFIG.REFRESH_INTERVAL / 1000;
         if (chartHoursInput) chartHoursInput.value = CONFIG.CHART_HOURS;
         if (buyInput) buyInput.value = CONFIG.BUY_PRICE_KWH;
+        if (surplusInput) surplusInput.value = CONFIG.SURPLUS_PRICE_KWH;
         if (sellInput) sellInput.value = CONFIG.SELL_PRICE_KWH;
         if (resaleInput) resaleInput.checked = CONFIG.HAS_RESALE_CONTRACT;
     } else {
         const buyInput = document.getElementById('buy-price-kwh');
+        const surplusInput = document.getElementById('surplus-price-kwh');
         const sellInput = document.getElementById('sell-price-kwh');
         const resaleInput = document.getElementById('has-resale-contract');
         if (buyInput) buyInput.value = CONFIG.BUY_PRICE_KWH;
+        if (surplusInput) surplusInput.value = CONFIG.SURPLUS_PRICE_KWH;
         if (sellInput) sellInput.value = CONFIG.SELL_PRICE_KWH;
         if (resaleInput) resaleInput.checked = CONFIG.HAS_RESALE_CONTRACT;
     }
@@ -1904,16 +1974,18 @@ function saveSettings() {
     const refreshInput = document.getElementById('refresh-interval');
     const chartHoursInput = document.getElementById('chart-hours');
     const buyInput = document.getElementById('buy-price-kwh');
+    const surplusInput = document.getElementById('surplus-price-kwh');
     const sellInput = document.getElementById('sell-price-kwh');
     const resaleInput = document.getElementById('has-resale-contract');
 
-    if (!refreshInput || !chartHoursInput || !buyInput || !sellInput || !resaleInput) {
+    if (!refreshInput || !chartHoursInput || !buyInput || !surplusInput || !sellInput || !resaleInput) {
         return;
     }
 
     const refreshInterval = parseInt(refreshInput.value, 10) * 1000;
     const chartHours = parseInt(chartHoursInput.value, 10);
     const buyPriceKwh = parseFloat(buyInput.value);
+    const surplusPriceKwh = parseFloat(surplusInput.value);
     const sellPriceKwh = parseFloat(sellInput.value);
     const hasResaleContract = resaleInput.checked;
 
@@ -1951,6 +2023,7 @@ function saveSettings() {
     CONFIG.REFRESH_INTERVAL = Number.isFinite(refreshInterval) ? Math.max(1000, refreshInterval) : 3000;
     CONFIG.CHART_HOURS = Number.isFinite(chartHours) ? Math.max(1, Math.min(720, chartHours)) : 24;
     CONFIG.BUY_PRICE_KWH = Number.isFinite(buyPriceKwh) ? Math.max(0, buyPriceKwh) : 0.25;
+    CONFIG.SURPLUS_PRICE_KWH = Number.isFinite(surplusPriceKwh) ? Math.max(0, surplusPriceKwh) : 0;
     CONFIG.SELL_PRICE_KWH = Number.isFinite(sellPriceKwh) ? Math.max(0, sellPriceKwh) : 0.011;
     CONFIG.HAS_RESALE_CONTRACT = hasResaleContract;
     CONFIG.CHANNELS = channels;
@@ -1962,6 +2035,7 @@ function saveSettings() {
             refreshInterval: CONFIG.REFRESH_INTERVAL,
             chartHours: CONFIG.CHART_HOURS,
             buyPriceKwh: CONFIG.BUY_PRICE_KWH,
+            surplusPriceKwh: CONFIG.SURPLUS_PRICE_KWH,
             sellPriceKwh: CONFIG.SELL_PRICE_KWH,
             hasResaleContract: CONFIG.HAS_RESALE_CONTRACT,
             unifiedChartMode: CONFIG.UNIFIED_CHART_MODE,
@@ -1978,6 +2052,10 @@ function saveSettings() {
     updateChannelInstantCards();
     updateTemperatureCard();
     renderTrendChart();
+    updateEnergyDashboard();
+    if (appState.currentPage === 'history') {
+        loadHistorySummary(true);
+    }
 
     alert('Parametres enregistres');
 }

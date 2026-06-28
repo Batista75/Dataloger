@@ -359,22 +359,17 @@ def history_daily_summary(days: int = Query(default=800, ge=60, le=3000)) -> dic
 		"refresh_policy": "daily",
 		"energy_reference": "c1",
 		"generated_day_utc": datetime.now(timezone.utc).date().isoformat(),
-		"record_high": None,
-		"record_low": None,
 		"current_month_average_kwh": None,
 		"last_day": None,
-		"last_7_days_average_kwh": None,
-		"year_over_year": None,
 		"monthly_consumption_last_12": [],
 		"monthly_pv_production_last_12": [],
+		"daily_energy_series": [],
 	}
 
 	if not series:
 		return empty_payload
 
 	latest = series[-1]
-	high = max(series, key=lambda item: float(item["grid_import_kwh"]))
-	low = min(series, key=lambda item: float(item["grid_import_kwh"]))
 
 	month_start = latest["date"].replace(day=1)
 	month_values = [
@@ -383,28 +378,6 @@ def history_daily_summary(days: int = Query(default=800, ge=60, le=3000)) -> dic
 		if item["date"] >= month_start and item["date"] <= latest["date"]
 	]
 	month_avg = sum(month_values) / len(month_values) if month_values else None
-
-	last7_values = [float(item["grid_import_kwh"]) for item in series[-7:]]
-	last7_avg = sum(last7_values) / len(last7_values) if last7_values else None
-
-	try:
-		yoy_date = latest["date"].replace(year=latest["date"].year - 1)
-	except ValueError:
-		yoy_date = latest["date"] - timedelta(days=365)
-
-	yoy_ref = next((item for item in series if item["date"] == yoy_date), None)
-	if yoy_ref is None:
-		yoy_payload: dict[str, Any] | None = None
-	else:
-		ref_value = float(yoy_ref["grid_import_kwh"])
-		last_value = float(latest["grid_import_kwh"])
-		pct = ((last_value - ref_value) / ref_value * 100.0) if ref_value > 0 else None
-		yoy_payload = {
-			"reference_day_utc": yoy_ref["date_utc"],
-			"reference_consumption_kwh": round(ref_value, 6),
-			"delta_kwh": round(last_value - ref_value, 6),
-			"delta_pct": round(pct, 3) if pct is not None else None,
-		}
 
 	monthly_import: dict[str, float] = {}
 	monthly_pv: dict[str, float] = {}
@@ -424,18 +397,21 @@ def history_daily_summary(days: int = Query(default=800, ge=60, le=3000)) -> dic
 		for month in last_12
 	]
 
+	daily_energy_series = [
+		{
+			"date_utc": item["date_utc"],
+			"c1_net_kwh": item["c1_net_kwh"],
+			"grid_import_kwh": item["grid_import_kwh"],
+			"grid_export_kwh": item["grid_export_kwh"],
+			"pv_production_kwh": item["pv_production_kwh"],
+		}
+		for item in series
+	]
+
 	return {
 		"refresh_policy": "daily",
 		"energy_reference": "c1",
 		"generated_day_utc": datetime.now(timezone.utc).date().isoformat(),
-		"record_high": {
-			"day_utc": high["date_utc"],
-			"consumption_kwh": round(float(high["grid_import_kwh"]), 6),
-		},
-		"record_low": {
-			"day_utc": low["date_utc"],
-			"consumption_kwh": round(float(low["grid_import_kwh"]), 6),
-		},
 		"current_month_average_kwh": round(month_avg, 6) if month_avg is not None else None,
 		"last_day": {
 			"day_utc": latest["date_utc"],
@@ -447,10 +423,9 @@ def history_daily_summary(days: int = Query(default=800, ge=60, le=3000)) -> dic
 			"autoconsumption_rate_pct": latest["autoconsumption_rate_pct"],
 			"consumption_kwh": latest["c1_net_kwh"],
 		},
-		"last_7_days_average_kwh": round(last7_avg, 6) if last7_avg is not None else None,
-		"year_over_year": yoy_payload,
 		"monthly_consumption_last_12": monthly_payload,
 		"monthly_pv_production_last_12": monthly_pv_payload,
+		"daily_energy_series": daily_energy_series,
 	}
 
 

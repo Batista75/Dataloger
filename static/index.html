@@ -40,22 +40,46 @@
     <main class="container">
         <!-- Dashboard Page -->
         <section id="dashboard" class="page active">
-            <!-- Instant Summary Cards -->
+            <!-- Energy metrics (daily, reset at 00:00 local) -->
+            <div class="energy-metrics-grid">
+                <div class="summary-card energy-card">
+                    <div class="summary-label">Consommation réelle</div>
+                    <div class="summary-value" id="energy-conso-reelle">-- kWh</div>
+                    <div class="summary-meta">C1 + A2 (jour en cours)</div>
+                </div>
+                <div class="summary-card energy-card">
+                    <div class="summary-label">Consommation facturée</div>
+                    <div class="summary-value" id="energy-conso-fact">-- kWh</div>
+                    <div class="summary-meta">C1 si positif, sinon 0</div>
+                </div>
+                <div class="summary-card energy-card">
+                    <div class="summary-label">Surplus</div>
+                    <div class="summary-value" id="energy-surplus">-- kWh</div>
+                    <div class="summary-meta">|C1| si C1 &lt; 0</div>
+                </div>
+                <div class="summary-card energy-card">
+                    <div class="summary-label">Autoconsommation</div>
+                    <div class="summary-value" id="energy-autoconso">-- kWh</div>
+                    <div class="summary-meta">A2 − surplus</div>
+                </div>
+                <div class="summary-card energy-card">
+                    <div class="summary-label">Taux autoconsommation</div>
+                    <div class="summary-value" id="energy-taux-autoconso">-- %</div>
+                    <div class="summary-meta">Autoconso / A2</div>
+                </div>
+                <div class="summary-card energy-card">
+                    <div class="summary-label">Taux autoproduction</div>
+                    <div class="summary-value" id="energy-taux-autoproduction">-- %</div>
+                    <div class="summary-meta">Autoconso / conso réelle</div>
+                </div>
+                <div class="summary-card energy-card highlight">
+                    <div class="summary-label">Facture du jour</div>
+                    <div class="summary-value" id="energy-facture-jour">-- EUR</div>
+                    <div class="summary-meta">Remise à zéro à 00:00</div>
+                </div>
+            </div>
+
             <div class="summary-grid">
-                <div class="summary-card">
-                    <div class="summary-label">Puissance réseau C1 net (instantanée)</div>
-                    <div class="summary-value" id="total-consumption-w">-- W</div>
-                    <div class="summary-meta">Hier: <span id="consumption-yesterday">-- W</span></div>
-                    <div class="summary-meta">Avant-hier: <span id="consumption-daybefore">-- W</span></div>
-                    <div class="summary-trend" id="consumption-trend">Tendance: --</div>
-                </div>
-                <div class="summary-card">
-                    <div class="summary-label">Puissance photovoltaïque A2 (signée)</div>
-                    <div class="summary-value" id="total-production-w">-- W</div>
-                    <div class="summary-meta">Hier: <span id="production-yesterday">-- W</span></div>
-                    <div class="summary-meta">Avant-hier: <span id="production-daybefore">-- W</span></div>
-                    <div class="summary-trend" id="production-trend">Tendance: --</div>
-                </div>
                 <div class="summary-card">
                     <div class="summary-label">Tension</div>
                     <div class="summary-value" id="voltage-value">-- V</div>
@@ -193,25 +217,6 @@
                 </div>
             </div>
 
-            <div class="billing-container">
-                <h2>Estimation économique</h2>
-                <div class="billing-grid">
-                    <div class="billing-item">
-                        <span class="billing-label">Conso nette vers EDF</span>
-                        <span class="billing-value" id="billing-net-grid">-- kWh</span>
-                    </div>
-                    <div class="billing-item">
-                        <span class="billing-label">Facture estimée</span>
-                        <span class="billing-value" id="billing-estimated-cost">-- EUR</span>
-                    </div>
-                    <div class="billing-item">
-                        <span class="billing-label">Valorisation revente</span>
-                        <span class="billing-value" id="billing-feed-in-value">-- EUR</span>
-                    </div>
-                </div>
-                <p id="billing-note" class="billing-note">--</p>
-            </div>
-
             <!-- Unified chart -->
             <div class="chart-container">
                 <div class="chart-header-row">
@@ -264,44 +269,19 @@
         <section id="history" class="page">
             <div class="history-summary-grid">
                 <div class="history-summary-card">
-                    <div class="history-summary-label">Record prélèvement réseau C1</div>
-                    <div class="history-summary-value" id="history-record-high">-- kWh</div>
-                    <div class="history-summary-meta" id="history-record-high-day">--</div>
+                    <div class="history-summary-label">Facture mois précédent</div>
+                    <div class="history-summary-value" id="history-prev-month-bill">-- EUR</div>
+                    <div class="history-summary-meta" id="history-prev-month-label">--</div>
                 </div>
                 <div class="history-summary-card">
-                    <div class="history-summary-label">Record prélèvement le plus bas</div>
-                    <div class="history-summary-value" id="history-record-low">-- kWh</div>
-                    <div class="history-summary-meta" id="history-record-low-day">--</div>
+                    <div class="history-summary-label">Comparaison facture N-1</div>
+                    <div class="history-summary-value" id="history-bill-yoy-pct">--</div>
+                    <div class="history-summary-meta" id="history-bill-yoy-ref">Même mois un an avant</div>
                 </div>
                 <div class="history-summary-card">
                     <div class="history-summary-label">Moyenne prélèvement (mois en cours)</div>
                     <div class="history-summary-value" id="history-month-avg">-- kWh</div>
                     <div class="history-summary-meta">Depuis le 1er</div>
-                </div>
-                <div class="history-summary-card">
-                    <div class="history-summary-label">Réseau C1 net (dernière journée)</div>
-                    <div class="history-summary-value" id="history-last-day">-- kWh</div>
-                    <div class="history-summary-meta" id="history-last-day-date">--</div>
-                </div>
-                <div class="history-summary-card">
-                    <div class="history-summary-label">Moyenne prélèvement (7 jours)</div>
-                    <div class="history-summary-value" id="history-last7-avg">-- kWh</div>
-                    <div class="history-summary-meta">Glissant</div>
-                </div>
-                <div class="history-summary-card">
-                    <div class="history-summary-label">Production PV (dernière journée)</div>
-                    <div class="history-summary-value" id="history-pv-production">-- kWh</div>
-                    <div class="history-summary-meta">Canal A2</div>
-                </div>
-                <div class="history-summary-card">
-                    <div class="history-summary-label">Taux autoconsommation PV</div>
-                    <div class="history-summary-value" id="history-autoconsumption-rate">--</div>
-                    <div class="history-summary-meta">Dernière journée</div>
-                </div>
-                <div class="history-summary-card">
-                    <div class="history-summary-label">Comparaison J-1 an (prélèvement)</div>
-                    <div class="history-summary-value" id="history-yoy-delta">--</div>
-                    <div class="history-summary-meta" id="history-yoy-ref">--</div>
                 </div>
             </div>
 
@@ -321,21 +301,25 @@
                 </div>
                 <button id="apply-filter" class="btn-primary">Appliquer</button>
             </div>
+            <p class="history-filter-hint">Filtre appliqué au tableau journalier ci-dessous (énergie C1/A2 par jour).</p>
 
             <div class="history-table-container">
                 <table id="history-table" class="history-table">
                     <thead>
                         <tr>
-                            <th>Heure</th>
-                            <th>Prod Total (kWh)</th>
-                            <th>Cons Total (kWh)</th>
-                            <th>Tension (V)</th>
-                            <th>Facteur Puissance</th>
+                            <th>Date</th>
+                            <th>C1 net (kWh)</th>
+                            <th>Prod. A2 (kWh)</th>
+                            <th>Conso réelle</th>
+                            <th>Conso facturée</th>
+                            <th>Surplus</th>
+                            <th>Autoconso</th>
+                            <th>Taux autoconso</th>
                         </tr>
                     </thead>
                     <tbody id="history-tbody">
                         <tr>
-                            <td colspan="5" class="loading">Chargement...</td>
+                            <td colspan="8" class="loading">Chargement...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -370,7 +354,7 @@
                 </div>
 
                 <div class="setting-item">
-                    <label for="buy-price-kwh">Prix achat électricité:</label>
+                    <label for="buy-price-kwh">Consommation facturée (tarif):</label>
                     <div class="setting-input">
                         <input type="number" id="buy-price-kwh" min="0" step="0.001" value="0.25">
                         <span>EUR/kWh</span>
@@ -378,6 +362,14 @@
                 </div>
 
                 <div class="setting-item">
+                    <label for="surplus-price-kwh">Surplus (tarif injection):</label>
+                    <div class="setting-input">
+                        <input type="number" id="surplus-price-kwh" min="0" step="0.001" value="0">
+                        <span>EUR/kWh</span>
+                    </div>
+                </div>
+
+                <div class="setting-item setting-item-hidden">
                     <label for="has-resale-contract">Contrat de revente établi:</label>
                     <div class="setting-input">
                         <input type="checkbox" id="has-resale-contract">
@@ -426,7 +418,7 @@
                         </div>
                         <div class="channel-setting-row">
                             <span class="channel-key">C1</span>
-                            <input type="text" id="cfg-c1-name" value="Canal C1" aria-label="Nom canal C1">
+                            <input type="text" id="cfg-c1-name" value="Consommation totale EDF (C1)" aria-label="Nom canal C1">
                             <select id="cfg-c1-type" aria-label="Type canal C1">
                                 <option value="unused">Non utilisé</option>
                                 <option value="consumption">Consommation</option>
@@ -440,7 +432,7 @@
                         </div>
                         <div class="channel-setting-row">
                             <span class="channel-key">A2</span>
-                            <input type="text" id="cfg-a2-name" value="Canal A2" aria-label="Nom canal A2">
+                            <input type="text" id="cfg-a2-name" value="Photovoltaïque (A2)" aria-label="Nom canal A2">
                             <select id="cfg-a2-type" aria-label="Type canal A2">
                                 <option value="unused">Non utilisé</option>
                                 <option value="consumption">Consommation</option>
@@ -639,7 +631,7 @@
 
     <!-- App Script (non-blocking, cache-busted) -->
     <script
-        src="/js/app.js?v=20260628c"
+        src="/js/app.js?v=20260628d"
         defer
         onerror="(function(){var t=document.getElementById('status-text');var d=document.getElementById('status-indicator');if(t)t.textContent='Erreur chargement JS';if(d)d.classList.add('error');})();"
     ></script>
