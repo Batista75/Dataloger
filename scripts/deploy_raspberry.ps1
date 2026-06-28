@@ -43,7 +43,22 @@ $ArchivePath = Join-Path $TmpDir "datalogger_deploy.zip"
 if (Test-Path $ArchivePath) {
     Remove-Item -Force $ArchivePath
 }
-Compress-Archive -Path (Join-Path $PackageRoot "*") -DestinationPath $ArchivePath
+
+# Build zip with POSIX paths so Linux extract overwrites files correctly.
+$PackageRootUnix = ($PackageRoot -replace '\\', '/')
+$ArchivePathUnix = ($ArchivePath -replace '\\', '/')
+python -c @"
+import zipfile
+from pathlib import Path
+
+root = Path(r'$PackageRoot')
+archive = Path(r'$ArchivePath')
+with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+    for path in root.rglob('*'):
+        if path.is_file():
+            zf.write(path, path.relative_to(root).as_posix())
+print(f'ZIP_READY={archive}')
+"@
 
 $Remote = "$RemoteUser@$RemoteHost"
 Write-Host "[deploy] Upload du package vers $Remote"
@@ -52,7 +67,8 @@ Write-Host "[deploy] Upload du package vers $Remote"
 $remoteLines = @(
         "set -eu",
         "mkdir -p '$RemoteDir'",
-        "python3 -c ""import zipfile; zipfile.ZipFile('/tmp/datalogger_deploy.zip').extractall('$RemoteDir')""",
+        "python3 -c ""import zipfile; z=zipfile.ZipFile('/tmp/datalogger_deploy.zip'); z.extractall('$RemoteDir'); z.close()""",
+        "find '$RemoteDir' -name '__MACOSX' -type d -prune -exec rm -rf {} + 2>/dev/null || true",
         "cd '$RemoteDir'",
         "chmod +x scripts/*.sh || true",
         "if [ -d .venv ]; then ./scripts/update.sh; else ./scripts/setup.sh; fi"
@@ -65,7 +81,8 @@ if (-not $SkipRestart) {
 
 $remoteLines += "printf 'API: '"
 $remoteLines += "sudo systemctl is-active datalogger.service"
-$remoteLines += "if systemctl list-unit-files | grep -q '^datalogger-tuya.service'; then printf 'TUYA: '; sudo systemctl is-active datalogger-tuya.service || true; fi"
+$remoteLines += "if systemctl list-unit-files 2>/dev/null | grep -q '^datalogger-tuya.service'; then printf ' TUYA: '; sudo systemctl is-active datalogger-tuya.service || true; fi"
+$remoteLines += "echo"
 
 $RemoteScript = ($remoteLines -join "`n")
 

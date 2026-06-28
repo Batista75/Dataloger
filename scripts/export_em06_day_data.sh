@@ -21,7 +21,8 @@ read_env() {
   if [ -z "$raw" ]; then
     echo "$default_value"
   else
-    echo "$raw"
+    # Strip CR/LF/spaces (Windows .env or CRLF scripts on Linux).
+    echo "$raw" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
   fi
 }
 

@@ -764,8 +764,10 @@ async function refreshPowerAnalytics(force) {
     }
 
     try {
-        const minutes = Math.max(CONFIG.CHART_HOURS, 50) * 60;
-        const response = await fetch(`${CONFIG.API_BASE}/api/measurements?minutes=${minutes}&limit=10000`);
+        const chartHours = Math.max(1, Math.min(Number(CONFIG.CHART_HOURS) || 24, 168));
+        const minutes = chartHours * 60;
+        const sampleLimit = Math.min(5000, Math.ceil((minutes * 60) / Math.max(CONFIG.REFRESH_INTERVAL, 1)) + 20);
+        const response = await fetch(`${CONFIG.API_BASE}/api/measurements?minutes=${minutes}&limit=${sampleLimit}`);
         if (!response.ok) throw new Error('Failed to load power analytics');
 
         const payload = await response.json();
@@ -1380,8 +1382,21 @@ function updateSystemInfo(status) {
 function updateStatus(status, latest) {
     const indicator = document.getElementById('status-indicator');
     const text = document.getElementById('status-text');
+    const isFresh = latest && typeof latest.is_fresh === 'boolean' ? latest.is_fresh : null;
+    const hasLatest = Boolean(latest && latest.data);
 
     if (!status || typeof status !== 'object') {
+        // Status can lag right after a service restart while /api/measurements/latest still responds.
+        if (hasLatest && isFresh !== false) {
+            indicator.classList.remove('error');
+            text.textContent = 'Capteur connecte';
+            return;
+        }
+        if (hasLatest) {
+            indicator.classList.add('error');
+            text.textContent = 'Donnees anciennes';
+            return;
+        }
         indicator.classList.add('error');
         text.textContent = 'API indisponible';
         return;
@@ -1389,7 +1404,6 @@ function updateStatus(status, latest) {
 
     const sensor = String(status.sensor || '').toLowerCase();
     const server = String(status.server || '').toLowerCase();
-    const isFresh = latest && typeof latest.is_fresh === 'boolean' ? latest.is_fresh : null;
 
     if (!sensor && server === 'running') {
         indicator.classList.remove('error');

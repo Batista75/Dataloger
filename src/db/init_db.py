@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS users (
 	password_hash TEXT NOT NULL,
 	role TEXT NOT NULL DEFAULT 'admin'
 );
+
+CREATE INDEX IF NOT EXISTS idx_measurements_ts_utc ON measurements(ts_utc);
+CREATE INDEX IF NOT EXISTS idx_system_events_ts_utc ON system_events(ts_utc);
 """
 
 
