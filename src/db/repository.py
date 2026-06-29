@@ -275,6 +275,38 @@ class MeasurementRepository:
 	def get_daily_consumption(self, limit_days: int = 800) -> list[dict[str, Any]]:
 		return self.get_daily_energy_summary(limit_days=limit_days)
 
+	def get_energy_deltas_since(self, from_ts_utc: str) -> dict[str, Any]:
+		"""Aggregate C1/A2 index deltas since from_ts_utc (live rows only, single SQL pass)."""
+		query = """
+		SELECT
+			COUNT(*) AS sample_count,
+			MIN(c1_consumption_kwh) AS c1_cons_min,
+			MAX(c1_consumption_kwh) AS c1_cons_max,
+			MIN(c1_production_kwh) AS c1_prod_min,
+			MAX(c1_production_kwh) AS c1_prod_max,
+			MIN(a2_production_kwh) AS a2_prod_min,
+			MAX(a2_production_kwh) AS a2_prod_max,
+			MIN(ts_utc) AS first_ts_utc,
+			MAX(ts_utc) AS last_ts_utc
+		FROM measurements
+		WHERE ts_utc >= ? AND quality_flag != 2
+		"""
+		with self._connect() as conn:
+			row = conn.execute(query, (from_ts_utc,)).fetchone()
+		if row is None:
+			return {
+				"sample_count": 0,
+				"c1_cons_min": None,
+				"c1_cons_max": None,
+				"c1_prod_min": None,
+				"c1_prod_max": None,
+				"a2_prod_min": None,
+				"a2_prod_max": None,
+				"first_ts_utc": None,
+				"last_ts_utc": None,
+			}
+		return dict(row)
+
 	def log_event(self, level: str, source: str, message: str, ts_utc: str) -> None:
 		with self._connect() as conn:
 			conn.execute(

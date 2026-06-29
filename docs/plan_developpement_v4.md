@@ -55,6 +55,7 @@ Les modes de compatibilité (`mqtt_json`, `meross_local_post`, `http_json`, `moc
 - Risque métier si fallback simulé activé en production.
 - Absence de tests de non-régression sur les calculs kWh / W.
 - API et UI sans authentification (LAN uniquement).
+- **Pi 2** : charge UI sensible au volume JSON — mitigations documentées dans [`perf_ui_raspberry.md`](perf_ui_raspberry.md) (2026-06-29).
 
 ---
 
@@ -70,6 +71,7 @@ Les modes de compatibilité (`mqtt_json`, `meross_local_post`, `http_json`, `moc
 | 0.2 | Valider `/api/refoss/compare-live` : écart < 10 % vs RPC natif | Rapport comparaison documenté |
 | 0.3 | Vérifier intégrité index kWh post-redémarrage | Pas de saut cumulatif anormal |
 | 0.4 | Activer monitoring basique : cron `doctor.sh` + alerte manuelle si `sensor=error` | Checklist ops rédigée |
+| 0.5 | Optimiser charge UI Pi 2 (`/api/energy/today`, throttle, boot différé) | Voir `docs/perf_ui_raspberry.md` |
 
 **Décision immédiate** : conserver `REFOSS_ALLOW_SIMULATED_FALLBACK=0` en environnement réel.
 

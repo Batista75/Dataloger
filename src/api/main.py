@@ -15,6 +15,7 @@ from requests.auth import HTTPDigestAuth
 
 from src.collector.service import CollectorService
 from src.core.config import settings
+from src.core.energy_metrics import compute_energy_metrics, deltas_from_indexes
 from src.db.init_db import init_database
 from src.db.repository import MeasurementRepository
 
@@ -137,6 +138,40 @@ def measurement_latest() -> dict[str, Any]:
 		"data_age_seconds": age_seconds,
 		"is_fresh": is_fresh,
 		"ts_utc": datetime.now(timezone.utc).isoformat(),
+	}
+
+
+@app.get("/api/energy/today")
+def energy_today(
+	from_ts_utc: str | None = Query(default=None, description="Local midnight as ISO UTC (browser)"),
+) -> dict[str, Any]:
+	now = datetime.now(timezone.utc)
+	if from_ts_utc:
+		try:
+			from_ts = datetime.fromisoformat(from_ts_utc.replace("Z", "+00:00")).astimezone(timezone.utc)
+		except ValueError:
+			from_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
+	else:
+		from_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+	raw = repo.get_energy_deltas_since(from_ts.isoformat())
+	sample_count = int(raw.get("sample_count") or 0)
+	c1_net, a2_prod = deltas_from_indexes(
+		_to_float(raw.get("c1_cons_min")),
+		_to_float(raw.get("c1_cons_max")),
+		_to_float(raw.get("c1_prod_min")),
+		_to_float(raw.get("c1_prod_max")),
+		_to_float(raw.get("a2_prod_min")),
+		_to_float(raw.get("a2_prod_max")),
+	)
+	metrics = compute_energy_metrics(c1_net, a2_prod)
+	return {
+		"from_ts_utc": from_ts.isoformat(),
+		"generated_at_utc": now.isoformat(),
+		"sample_count": sample_count,
+		"first_ts_utc": raw.get("first_ts_utc"),
+		"last_ts_utc": raw.get("last_ts_utc"),
+		**metrics,
 	}
 
 

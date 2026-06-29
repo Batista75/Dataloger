@@ -7,9 +7,12 @@ const ENERGY_FIELDS = [
 ];
 const CONFIG = {
     API_BASE: '',
-    REFRESH_INTERVAL: 3000,
+    REFRESH_INTERVAL: 5000,
     CHART_HOURS: 24,
-    CHART_REFRESH_INTERVAL: 30000,
+    CHART_REFRESH_INTERVAL: 60000,
+    CHART_MAX_SAMPLE_LIMIT: 3000,
+    CLIMATE_MAX_SAMPLE_LIMIT: 3000,
+    TODAY_ENERGY_REFRESH_MS: 45000,
     POWER_INTERVAL_SECONDS: 20,
     REALTIME_FILTER_ALPHA: 0.1,
     CHART_RESAMPLE_MINUTES: 5,
@@ -58,6 +61,7 @@ let appState = {
     latestTemperatureAgeSeconds: null,
     climateSeries: [],
     lastClimateRefreshMs: 0,
+    lastTodayEnergyRefreshMs: 0,
     lastHistorySummaryRefreshMs: 0,
     lastQualityRefreshMs: 0,
     historySummaryChart: null,
@@ -65,7 +69,6 @@ let appState = {
     knownSensors: new Set(),
     unifiedHiddenDatasets: {},
     dailyEnergySeries: [],
-    todayMeasurementRows: [],
     todayEnergy: null,
 };
 
@@ -94,8 +97,10 @@ function startApp() {
         initializeExpandableChannels();
         loadSettings();
         updateAllData();
+        scheduleBootHeavyLoads();
 
         setInterval(updateAllData, CONFIG.REFRESH_INTERVAL);
+        setInterval(() => refreshTodayEnergy(false), CONFIG.TODAY_ENERGY_REFRESH_MS);
         setInterval(() => refreshPowerAnalytics(false), CONFIG.CHART_REFRESH_INTERVAL);
         setInterval(() => refreshClimateAnalytics(false), CONFIG.CHART_REFRESH_INTERVAL);
     } catch (error) {
@@ -164,19 +169,6 @@ function localDateStringToUtcIso(dateStr, endOfDay = false) {
         ? new Date(year, month - 1, day, 23, 59, 59, 999)
         : new Date(year, month - 1, day, 0, 0, 0, 0);
     return dt.toISOString();
-}
-
-function computeDailyKwhFromRows(rows) {
-    if (!Array.isArray(rows) || rows.length === 0) {
-        return { c1NetKwh: 0, a2ProdKwh: 0 };
-    }
-    const first = rows[0];
-    const last = rows[rows.length - 1];
-    const c1Import = Math.max(0, toNumber(last.c1_consumption_kwh) - toNumber(first.c1_consumption_kwh));
-    const c1Export = Math.max(0, toNumber(last.c1_production_kwh) - toNumber(first.c1_production_kwh));
-    const c1NetKwh = c1Import - c1Export;
-    const a2ProdKwh = Math.max(0, toNumber(last.a2_production_kwh) - toNumber(first.a2_production_kwh));
-    return { c1NetKwh, a2ProdKwh };
 }
 
 function computeEnergyMetrics(c1NetKwh, a2ProdKwh) {
@@ -716,6 +708,16 @@ function switchPage(page) {
 }
 
 /* ============ Data Loading ============ */
+function scheduleBootHeavyLoads() {
+    window.setTimeout(() => {
+        void Promise.all([
+            refreshTodayEnergy(true),
+            refreshPowerAnalytics(true),
+            refreshClimateAnalytics(true),
+        ]);
+    }, 80);
+}
+
 async function updateAllData() {
     try {
         const [status, latest, temperature] = await Promise.all([
@@ -742,9 +744,6 @@ async function updateAllData() {
             updateDashboard(latest.data, status || {});
         }
 
-        await refreshPowerAnalytics(false);
-        await refreshTodayEnergy();
-        await refreshClimateAnalytics(false);
         updateFooter();
     } catch (error) {
         console.error('Error fetching data:', error);
@@ -862,7 +861,10 @@ async function refreshPowerAnalytics(force) {
     try {
         const chartHours = Math.max(1, Math.min(Number(CONFIG.CHART_HOURS) || 24, 168));
         const minutes = chartHours * 60;
-        const sampleLimit = Math.min(5000, Math.ceil((minutes * 60) / Math.max(CONFIG.REFRESH_INTERVAL, 1)) + 20);
+        const sampleLimit = Math.min(
+            CONFIG.CHART_MAX_SAMPLE_LIMIT,
+            Math.ceil((minutes * 60) / Math.max(CONFIG.REFRESH_INTERVAL, 1)) + 20,
+        );
         const response = await fetch(`${CONFIG.API_BASE}/api/measurements?minutes=${minutes}&limit=${sampleLimit}`);
         if (!response.ok) throw new Error('Failed to load power analytics');
 
@@ -882,27 +884,49 @@ async function refreshPowerAnalytics(force) {
     }
 }
 
-async function refreshTodayEnergy() {
+async function refreshTodayEnergy(force = false) {
+    const now = Date.now();
+    if (!force && now - appState.lastTodayEnergyRefreshMs < CONFIG.TODAY_ENERGY_REFRESH_MS) {
+        return;
+    }
+
     try {
-        const from = getLocalDayStartIso();
-        const response = await fetch(
-            `${CONFIG.API_BASE}/api/measurements?from_ts_utc=${encodeURIComponent(from)}&limit=10000`,
-        );
+        const from = encodeURIComponent(getLocalDayStartIso());
+        const response = await fetch(`${CONFIG.API_BASE}/api/energy/today?from_ts_utc=${from}`);
         if (!response.ok) throw new Error('Failed to load today energy');
 
         const payload = await response.json();
-        const rows = Array.isArray(payload.data) ? payload.data : [];
-        appState.todayMeasurementRows = rows;
-        const { c1NetKwh, a2ProdKwh } = computeDailyKwhFromRows(rows);
-        appState.todayEnergy = computeEnergyMetrics(c1NetKwh, a2ProdKwh);
-        updateEnergyDashboard();
+        applyTodayEnergyPayload(payload);
+        appState.lastTodayEnergyRefreshMs = now;
     } catch (error) {
         console.error('Error loading today energy:', error);
     }
 }
 
+function applyTodayEnergyPayload(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    appState.todayEnergy = {
+        c1NetKwh: toNumber(payload.c1_net_kwh, 0),
+        a2ProdKwh: toNumber(payload.a2_production_kwh, 0),
+        consoReelle: toNumber(payload.conso_reelle_kwh, 0),
+        consoFact: toNumber(payload.conso_fact_kwh, 0),
+        surplus: toNumber(payload.surplus_kwh, 0),
+        autoconso: toNumber(payload.autoconso_kwh, 0),
+        tauxAutoconso: toNumber(payload.taux_autoconso_pct, NaN),
+        tauxAutoproduction: toNumber(payload.taux_autoproduction_pct, NaN),
+    };
+    updateEnergyDashboard();
+}
+
 function updateEnergyDashboard() {
-    const metrics = appState.todayEnergy || computeEnergyMetrics(0, 0);
+    const metrics = appState.todayEnergy || {
+        consoReelle: 0,
+        consoFact: 0,
+        surplus: 0,
+        autoconso: 0,
+        tauxAutoconso: NaN,
+        tauxAutoproduction: NaN,
+    };
     const billEur = computeDayBillEur(metrics.consoFact, metrics.surplus);
 
     setTextById('energy-conso-reelle', fmtKwh(metrics.consoReelle, 3));
@@ -1127,7 +1151,8 @@ async function refreshClimateAnalytics(force) {
 
     try {
         const minutes = Math.max(CONFIG.CHART_HOURS, 1) * 60;
-        const response = await fetch(`${CONFIG.API_BASE}/api/temperature/history?minutes=${minutes}&limit=10000`);
+        const limit = CONFIG.CLIMATE_MAX_SAMPLE_LIMIT;
+        const response = await fetch(`${CONFIG.API_BASE}/api/temperature/history?minutes=${minutes}&limit=${limit}`);
         if (!response.ok) throw new Error('Failed to load climate analytics');
 
         const payload = await response.json();
@@ -1865,7 +1890,7 @@ function loadSettings() {
     }
 
     if (settings) {
-        CONFIG.REFRESH_INTERVAL = settings.refreshInterval || 3000;
+        CONFIG.REFRESH_INTERVAL = settings.refreshInterval || 5000;
         CONFIG.CHART_HOURS = settings.chartHours || 24;
         CONFIG.BUY_PRICE_KWH = settings.buyPriceKwh ?? 0.25;
         CONFIG.SURPLUS_PRICE_KWH = settings.surplusPriceKwh ?? 0;

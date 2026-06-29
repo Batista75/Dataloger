@@ -98,6 +98,7 @@ Sondes Tuya ──script──────►  fichiers JSON/CSV ─────
 | `GET /api/measurements/latest` | Dernière mesure + fraîcheur |
 | `GET /api/measurements` | Historique filtré (minutes, limit) |
 | `GET /api/quality/latest` | Score confiance, alertes, comportement UI |
+| `GET /api/energy/today` | Agrégats journaliers C1/A2 (léger, Pi 2) |
 | `GET /api/history/daily-summary` | Stats journalières, YoY, 12 mois |
 | `GET /api/refoss/compare-live` | Comparaison puissance RPC vs reconstruction locale |
 | `GET /api/temperature/latest` | Dernière mesure Tuya |
