@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from src.core.quality_flags import QUALITY_IMPORTED_DAILY, QUALITY_LIVE, QUALITY_SUSPECT
 
 
 @dataclass
@@ -27,6 +28,26 @@ class Measurement:
 	frequency_hz: float | None = None
 	power_factor: float | None = None
 	quality_flag: int = 1
+	a1_power_w: float | None = None
+	b1_power_w: float | None = None
+	c1_power_w: float | None = None
+	a2_power_w: float | None = None
+	b2_power_w: float | None = None
+	c2_power_w: float | None = None
+
+
+_MEASUREMENT_SELECT = """
+	ts_utc,
+	a1_production_kwh, a1_consumption_kwh,
+	b1_production_kwh, b1_consumption_kwh,
+	c1_production_kwh, c1_consumption_kwh,
+	a2_production_kwh, a2_consumption_kwh,
+	b2_production_kwh, b2_consumption_kwh,
+	c2_production_kwh, c2_consumption_kwh,
+	total_production_kwh, total_consumption_kwh,
+	voltage_v, frequency_hz, power_factor, quality_flag,
+	a1_power_w, b1_power_w, c1_power_w, a2_power_w, b2_power_w, c2_power_w
+"""
 
 
 class MeasurementRepository:
@@ -49,8 +70,9 @@ class MeasurementRepository:
 			b2_production_kwh, b2_consumption_kwh,
 			c2_production_kwh, c2_consumption_kwh,
 			total_production_kwh, total_consumption_kwh,
-			voltage_v, frequency_hz, power_factor, quality_flag
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			voltage_v, frequency_hz, power_factor, quality_flag,
+			a1_power_w, b1_power_w, c1_power_w, a2_power_w, b2_power_w, c2_power_w
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		"""
 		values = (
 			measurement.ts_utc,
@@ -72,22 +94,20 @@ class MeasurementRepository:
 			measurement.frequency_hz,
 			measurement.power_factor,
 			measurement.quality_flag,
+			measurement.a1_power_w,
+			measurement.b1_power_w,
+			measurement.c1_power_w,
+			measurement.a2_power_w,
+			measurement.b2_power_w,
+			measurement.c2_power_w,
 		)
 		with self._connect() as conn:
 			conn.execute(query, values)
 			conn.commit()
 
 	def get_latest(self) -> dict[str, Any] | None:
-		query = """
-		SELECT ts_utc,
-			a1_production_kwh, a1_consumption_kwh,
-			b1_production_kwh, b1_consumption_kwh,
-			c1_production_kwh, c1_consumption_kwh,
-			a2_production_kwh, a2_consumption_kwh,
-			b2_production_kwh, b2_consumption_kwh,
-			c2_production_kwh, c2_consumption_kwh,
-			total_production_kwh, total_consumption_kwh,
-			voltage_v, frequency_hz, power_factor, quality_flag
+		query = f"""
+		SELECT {_MEASUREMENT_SELECT}
 		FROM measurements
 		ORDER BY id DESC
 		LIMIT 1
@@ -99,16 +119,8 @@ class MeasurementRepository:
 		return dict(row)
 
 	def get_range(self, from_ts_utc: str, to_ts_utc: str, limit: int = 2000) -> list[dict[str, Any]]:
-		query = """
-		SELECT ts_utc,
-			a1_production_kwh, a1_consumption_kwh,
-			b1_production_kwh, b1_consumption_kwh,
-			c1_production_kwh, c1_consumption_kwh,
-			a2_production_kwh, a2_consumption_kwh,
-			b2_production_kwh, b2_consumption_kwh,
-			c2_production_kwh, c2_consumption_kwh,
-			total_production_kwh, total_consumption_kwh,
-			voltage_v, frequency_hz, power_factor, quality_flag
+		query = f"""
+		SELECT {_MEASUREMENT_SELECT}
 		FROM measurements
 		WHERE ts_utc >= ? AND ts_utc <= ?
 		ORDER BY ts_utc ASC
@@ -118,17 +130,20 @@ class MeasurementRepository:
 			rows = conn.execute(query, (from_ts_utc, to_ts_utc, limit)).fetchall()
 		return [dict(row) for row in rows]
 
+	def get_range_all(self, from_ts_utc: str, to_ts_utc: str) -> list[dict[str, Any]]:
+		query = f"""
+		SELECT {_MEASUREMENT_SELECT}
+		FROM measurements
+		WHERE ts_utc >= ? AND ts_utc <= ?
+		ORDER BY ts_utc ASC
+		"""
+		with self._connect() as conn:
+			rows = conn.execute(query, (from_ts_utc, to_ts_utc)).fetchall()
+		return [dict(row) for row in rows]
+
 	def get_recent(self, limit: int = 3000) -> list[dict[str, Any]]:
-		query = """
-		SELECT ts_utc,
-			a1_production_kwh, a1_consumption_kwh,
-			b1_production_kwh, b1_consumption_kwh,
-			c1_production_kwh, c1_consumption_kwh,
-			a2_production_kwh, a2_consumption_kwh,
-			b2_production_kwh, b2_consumption_kwh,
-			c2_production_kwh, c2_consumption_kwh,
-			total_production_kwh, total_consumption_kwh,
-			voltage_v, frequency_hz, power_factor, quality_flag
+		query = f"""
+		SELECT {_MEASUREMENT_SELECT}
 		FROM measurements
 		ORDER BY id DESC
 		LIMIT ?
@@ -161,16 +176,16 @@ class MeasurementRepository:
 			SELECT
 				substr(ts_utc, 1, 10) AS day_utc,
 				SUM(CASE WHEN quality_flag = 2 THEN 1 ELSE 0 END) AS imported_rows,
-				SUM(CASE WHEN quality_flag != 2 THEN 1 ELSE 0 END) AS live_rows,
+				SUM(CASE WHEN quality_flag = 1 THEN 1 ELSE 0 END) AS live_rows,
 				MAX(CASE WHEN quality_flag = 2 THEN c1_consumption_kwh END) AS imp_c1_cons,
-				MIN(CASE WHEN quality_flag != 2 THEN c1_consumption_kwh END) AS live_c1_cons_min,
-				MAX(CASE WHEN quality_flag != 2 THEN c1_consumption_kwh END) AS live_c1_cons_max,
+				MIN(CASE WHEN quality_flag = 1 THEN c1_consumption_kwh END) AS live_c1_cons_min,
+				MAX(CASE WHEN quality_flag = 1 THEN c1_consumption_kwh END) AS live_c1_cons_max,
 				MAX(CASE WHEN quality_flag = 2 THEN c1_production_kwh END) AS imp_c1_prod,
-				MIN(CASE WHEN quality_flag != 2 THEN c1_production_kwh END) AS live_c1_prod_min,
-				MAX(CASE WHEN quality_flag != 2 THEN c1_production_kwh END) AS live_c1_prod_max,
+				MIN(CASE WHEN quality_flag = 1 THEN c1_production_kwh END) AS live_c1_prod_min,
+				MAX(CASE WHEN quality_flag = 1 THEN c1_production_kwh END) AS live_c1_prod_max,
 				MAX(CASE WHEN quality_flag = 2 THEN a2_production_kwh END) AS imp_a2_prod,
-				MIN(CASE WHEN quality_flag != 2 THEN a2_production_kwh END) AS live_a2_prod_min,
-				MAX(CASE WHEN quality_flag != 2 THEN a2_production_kwh END) AS live_a2_prod_max
+				MIN(CASE WHEN quality_flag = 1 THEN a2_production_kwh END) AS live_a2_prod_min,
+				MAX(CASE WHEN quality_flag = 1 THEN a2_production_kwh END) AS live_a2_prod_max
 			FROM measurements
 			GROUP BY substr(ts_utc, 1, 10)
 		),
@@ -289,10 +304,10 @@ class MeasurementRepository:
 			MIN(ts_utc) AS first_ts_utc,
 			MAX(ts_utc) AS last_ts_utc
 		FROM measurements
-		WHERE ts_utc >= ? AND quality_flag != 2
+		WHERE ts_utc >= ? AND quality_flag NOT IN (?, ?)
 		"""
 		with self._connect() as conn:
-			row = conn.execute(query, (from_ts_utc,)).fetchone()
+			row = conn.execute(query, (from_ts_utc, QUALITY_IMPORTED_DAILY, QUALITY_SUSPECT)).fetchone()
 		if row is None:
 			return {
 				"sample_count": 0,
@@ -317,3 +332,149 @@ class MeasurementRepository:
 
 	def as_dict(self, measurement: Measurement) -> dict[str, Any]:
 		return asdict(measurement)
+
+	def upsert_power_slot(self, slot: dict[str, Any]) -> None:
+		query = """
+		INSERT INTO power_slots (
+			slot_start_utc, slot_minutes, slot_index,
+			c1_avg_w, a2_avg_w, b2_avg_w, c2_avg_w,
+			c1_sample_count, a2_sample_count, b2_sample_count, c2_sample_count,
+			quality_flag
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(slot_start_utc, slot_minutes) DO UPDATE SET
+			slot_index = excluded.slot_index,
+			c1_avg_w = excluded.c1_avg_w,
+			a2_avg_w = excluded.a2_avg_w,
+			b2_avg_w = excluded.b2_avg_w,
+			c2_avg_w = excluded.c2_avg_w,
+			c1_sample_count = excluded.c1_sample_count,
+			a2_sample_count = excluded.a2_sample_count,
+			b2_sample_count = excluded.b2_sample_count,
+			c2_sample_count = excluded.c2_sample_count,
+			quality_flag = excluded.quality_flag
+		"""
+		values = (
+			slot["slot_start_utc"],
+			int(slot["slot_minutes"]),
+			int(slot["slot_index"]),
+			slot.get("c1_avg_w"),
+			slot.get("a2_avg_w"),
+			slot.get("b2_avg_w"),
+			slot.get("c2_avg_w"),
+			int(slot.get("c1_sample_count") or 0),
+			int(slot.get("a2_sample_count") or 0),
+			int(slot.get("b2_sample_count") or 0),
+			int(slot.get("c2_sample_count") or 0),
+			int(slot.get("quality_flag") or QUALITY_LIVE),
+		)
+		with self._connect() as conn:
+			conn.execute(query, values)
+			conn.commit()
+
+	def get_latest_power_slot_start(self, slot_minutes: int) -> str | None:
+		query = """
+		SELECT slot_start_utc FROM power_slots
+		WHERE slot_minutes = ?
+		ORDER BY slot_start_utc DESC
+		LIMIT 1
+		"""
+		with self._connect() as conn:
+			row = conn.execute(query, (slot_minutes,)).fetchone()
+		if row is None:
+			return None
+		return str(row[0])
+
+	def count_measurements_before(
+		self,
+		before_ts_utc: str,
+		quality_flags: tuple[int, ...] | None = None,
+	) -> int:
+		if quality_flags:
+			placeholders = ",".join("?" for _ in quality_flags)
+			query = f"SELECT COUNT(*) FROM measurements WHERE ts_utc < ? AND quality_flag IN ({placeholders})"
+			params: tuple[Any, ...] = (before_ts_utc, *quality_flags)
+		else:
+			query = "SELECT COUNT(*) FROM measurements WHERE ts_utc < ?"
+			params = (before_ts_utc,)
+		with self._connect() as conn:
+			row = conn.execute(query, params).fetchone()
+		return int(row[0]) if row else 0
+
+	def purge_measurements_before(
+		self,
+		before_ts_utc: str,
+		quality_flags: tuple[int, ...] | None = None,
+	) -> int:
+		if quality_flags:
+			placeholders = ",".join("?" for _ in quality_flags)
+			query = f"DELETE FROM measurements WHERE ts_utc < ? AND quality_flag IN ({placeholders})"
+			params: tuple[Any, ...] = (before_ts_utc, *quality_flags)
+		else:
+			query = "DELETE FROM measurements WHERE ts_utc < ?"
+			params = (before_ts_utc,)
+		with self._connect() as conn:
+			cur = conn.execute(query, params)
+			deleted = cur.rowcount
+			conn.commit()
+		return int(deleted) if deleted >= 0 else 0
+
+	def get_power_slots_for_day(
+		self,
+		day_start_utc: str,
+		day_end_utc: str,
+		slot_minutes: int,
+	) -> list[dict[str, Any]]:
+		query = """
+		SELECT slot_start_utc, slot_minutes, slot_index,
+			c1_avg_w, a2_avg_w, b2_avg_w, c2_avg_w,
+			c1_sample_count, a2_sample_count, b2_sample_count, c2_sample_count,
+			quality_flag
+		FROM power_slots
+		WHERE slot_minutes = ? AND slot_start_utc >= ? AND slot_start_utc < ?
+		ORDER BY slot_start_utc ASC
+		"""
+		with self._connect() as conn:
+			rows = conn.execute(query, (slot_minutes, day_start_utc, day_end_utc)).fetchall()
+		return [dict(row) for row in rows]
+
+	def mark_suspect_measurements_before_trusted_cutoff(
+		self,
+		unreliable_from: str,
+		unreliable_until: str,
+		local_start_hhmm: str = "14:00",
+	) -> int:
+		"""Mark live rows before daily trusted cutoff as QUALITY_SUSPECT (step 1)."""
+		from src.core.chart_power import PARIS, resolve_trusted_chart_from, _parse_iso_date
+
+		start_date = _parse_iso_date(unreliable_from)
+		end_date = _parse_iso_date(unreliable_until)
+		if start_date is None or end_date is None:
+			return 0
+
+		total = 0
+		day = start_date
+		while day <= end_date:
+			local_midnight = datetime(day.year, day.month, day.day, tzinfo=PARIS)
+			day_start = local_midnight.astimezone(timezone.utc)
+			trusted_from = resolve_trusted_chart_from(
+				day_start,
+				unreliable_from=start_date,
+				unreliable_until=end_date,
+				local_start_hhmm=local_start_hhmm,
+			)
+			next_day = day_start + timedelta(days=1)
+			with self._connect() as conn:
+				cur = conn.execute(
+					"""
+					UPDATE measurements
+					SET quality_flag = ?
+					WHERE quality_flag = ?
+						AND ts_utc >= ? AND ts_utc < ?
+						AND ts_utc < ?
+					""",
+					(QUALITY_SUSPECT, QUALITY_LIVE, day_start.isoformat(), next_day.isoformat(), trusted_from.isoformat()),
+				)
+				total += int(cur.rowcount or 0)
+				conn.commit()
+			day = day + timedelta(days=1)
+		return total

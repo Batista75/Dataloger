@@ -160,6 +160,22 @@ Sondes Tuya ──script──────►  fichiers JSON/CSV ─────
 | **b2, c2** | Consommateurs monitorés |
 | **a1, b1** | Non utilisés (masqués) |
 
+### Puissance instantanée par type de canal
+
+| Type UI | Comportement sonde | Affichage W |
+|---------|-------------------|-------------|
+| Consommation (B2, C2) | Valeur ≥ 0 | `max(0, puissance)` |
+| Générateur (A2, PV) | Sonde inversée, négatif en production | signe conservé (ex. −600 W) |
+| Consommation totale EDF (C1) | Référence réseau, non inversée | net import/export (positif = soutirage) |
+
+Bilan instantané : `autre = C1 − (A2 + B2 + C2)` (signes conservés).
+
+L’API `/api/measurements/latest` expose `channels_power_w` (puissance RPC confirmée par le collecteur) pour l’affichage instantané.
+
+Le graphe journalier lit `*_power_w` enregistré à chaque échantillon (puissance RPC). Les périodes sans données (trou de collecte &gt; 15 min) apparaissent vides ; les anciennes mesures sans `*_power_w` sont reconstruites depuis les index kWh intégrés.
+
+**Autre (non monitoré)** = C1 − (A2 + B2 + C2), signes conservés.
+
 ### Bilan énergétique
 
 En règle générale :

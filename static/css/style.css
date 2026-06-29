@@ -693,6 +693,19 @@ body {
     width: 120px;
 }
 
+.setting-hint {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: #6b7280;
+    line-height: 1.4;
+}
+
+.settings-group h3 {
+    font-size: 1rem;
+    margin: 0 0 1rem;
+    color: #374151;
+}
+
 .channels-settings-grid {
     display: grid;
     gap: 0.75rem;

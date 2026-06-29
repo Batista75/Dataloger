@@ -92,5 +92,5 @@ class RefossLocalClient:
 			voltage_v=voltage_v,
 			frequency_hz=frequency_hz,
 			power_factor=power_factor,
-			quality_flag=0,
+			quality_flag=1,
 		)

@@ -96,6 +96,11 @@
                     <div class="summary-meta">Sonde: <span id="temperature-mac">--</span></div>
                     <div class="summary-meta">Age: <span id="temperature-age">--</span></div>
                 </div>
+                <div class="summary-card">
+                    <div class="summary-label">Autre (non monitore)</div>
+                    <div class="summary-value" id="unmonitored-power-w">-- W</div>
+                    <div class="summary-meta">C1 &minus; (A2 + B2 + C2)</div>
+                </div>
             </div>
 
             <!-- Expandable channels -->
@@ -227,7 +232,7 @@
                         <label class="chart-filter-item"><input type="checkbox" id="graph-show-humidity" checked> Humidite</label>
                     </div>
                 </div>
-                <div class="chart-legend-hint">Abscisse fixe de 00:00 a 23:45 (pas de 15 minutes).</div>
+                <div class="chart-legend-hint">Historique = moyenne 15 min (puissance RPC). Dernier point = mesure temps reel des cartes.</div>
                 <div class="chart-legend-hint">Sondes electriques affichees:</div>
                 <div class="chart-filters" id="chart-filters" aria-label="Filtres sondes electriques"></div>
                 <canvas id="trend-chart"></canvas>
@@ -336,13 +341,42 @@
         <section id="settings" class="page">
             <div class="settings-group">
                 <h2>Configuration</h2>
+                <h3>Rafraîchissement</h3>
                 
                 <div class="setting-item">
-                    <label for="refresh-interval">Intervalle de rafraîchissement:</label>
+                    <label for="refresh-realtime">Temps réel (cartes statut / puissance):</label>
                     <div class="setting-input">
-                        <input type="number" id="refresh-interval" min="1" max="60" value="3">
+                        <input type="number" id="refresh-realtime" min="3" max="60" step="1" value="5">
                         <span>secondes</span>
                     </div>
+                    <p class="setting-hint" id="refresh-realtime-hint"></p>
+                </div>
+
+                <div class="setting-item">
+                    <label for="refresh-chart">Graphe puissance et climat (24 h):</label>
+                    <div class="setting-input">
+                        <input type="number" id="refresh-chart" min="15" max="300" step="1" value="60">
+                        <span>secondes</span>
+                    </div>
+                    <p class="setting-hint" id="refresh-chart-hint"></p>
+                </div>
+
+                <div class="setting-item">
+                    <label for="refresh-energy">Énergie du jour (kWh / facture):</label>
+                    <div class="setting-input">
+                        <input type="number" id="refresh-energy" min="15" max="300" step="1" value="45">
+                        <span>secondes</span>
+                    </div>
+                    <p class="setting-hint" id="refresh-energy-hint"></p>
+                </div>
+
+                <div class="setting-item">
+                    <label for="refresh-quality">Qualité des données:</label>
+                    <div class="setting-input">
+                        <input type="number" id="refresh-quality" min="60" max="1800" step="1" value="300">
+                        <span>secondes</span>
+                    </div>
+                    <p class="setting-hint" id="refresh-quality-hint"></p>
                 </div>
 
                 <div class="setting-item">
@@ -631,7 +665,7 @@
 
     <!-- App Script (non-blocking, cache-busted) -->
     <script
-        src="/js/app.js?v=20260629a"
+        src="/js/app.js?v=20260629k"
         defer
         onerror="(function(){var t=document.getElementById('status-text');var d=document.getElementById('status-indicator');if(t)t.textContent='Erreur chargement JS';if(d)d.classList.add('error');})();"
     ></script>

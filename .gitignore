@@ -18,6 +18,7 @@ __pycache__/
 
 # Runtime artifacts
 data/*.db
+data/backups/
 data/*.csv
 data/*.json
 captures/

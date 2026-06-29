@@ -44,6 +44,21 @@ class Settings:
 	tuya_cloud_api_region: str = os.getenv("TUYA_CLOUD_API_REGION", "eu")
 	tuya_latest_json_path: Path = Path(os.getenv("TUYA_LATEST_JSON_PATH", "data/tuya_temperature_latest.json"))
 	tuya_history_csv_path: Path = Path(os.getenv("TUYA_HISTORY_CSV_PATH", "data/tuya_temperature_history.csv"))
+	c1_power_invert: str = os.getenv("C1_POWER_INVERT", "0")
+	chart_slot_minutes: int = int(os.getenv("CHART_SLOT_MINUTES", "15"))
+	chart_unreliable_from: str = os.getenv("CHART_UNRELIABLE_FROM", "2026-06-27")
+	chart_unreliable_until: str = os.getenv("CHART_UNRELIABLE_UNTIL", "2026-06-29")
+	chart_unreliable_local_start: str = os.getenv("CHART_UNRELIABLE_LOCAL_START", "14:00")
+	chart_min_samples_per_slot: int = int(os.getenv("CHART_MIN_SAMPLES_PER_SLOT", "5"))
+	chart_mark_suspect_on_startup: bool = (
+		os.getenv("CHART_MARK_SUSPECT_ON_STARTUP", "0").strip().lower() in {"1", "true", "yes", "on"}
+	)
+	raw_retention_days: int = int(os.getenv("RAW_RETENTION_DAYS", "90"))
+	backup_dir: Path = Path(os.getenv("BACKUP_DIR", "data/backups"))
+	backup_keep_count: int = int(os.getenv("BACKUP_KEEP_COUNT", "14"))
+	maintenance_enabled: bool = (
+		os.getenv("MAINTENANCE_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+	)
 
 
 settings = Settings()

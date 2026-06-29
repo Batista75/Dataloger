@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily SQLite backup and raw measurement purge (02:30)
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+Unit=datalogger-maintenance.service
+
+[Install]
+WantedBy=timers.target

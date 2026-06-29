@@ -8,16 +8,15 @@ const ENERGY_FIELDS = [
 const CONFIG = {
     API_BASE: '',
     REFRESH_INTERVAL: 5000,
-    CHART_HOURS: 24,
     CHART_REFRESH_INTERVAL: 60000,
-    CHART_MAX_SAMPLE_LIMIT: 3000,
+    CHART_HOURS: 24,
+    CHART_MAX_SAMPLE_LIMIT: 5000,
     CLIMATE_MAX_SAMPLE_LIMIT: 3000,
     TODAY_ENERGY_REFRESH_MS: 45000,
     POWER_INTERVAL_SECONDS: 20,
     REALTIME_FILTER_ALPHA: 0.1,
-    CHART_RESAMPLE_MINUTES: 5,
+    CHART_RESAMPLE_MINUTES: 15,
     CHART_AXIS_LABEL_MINUTES: 15,
-    CHART_MOVING_AVERAGE_WINDOW: 3,
     HISTORY_LIMIT: 100,
     HISTORY_SUMMARY_REFRESH_MS: 24 * 60 * 60 * 1000,
     QUALITY_REFRESH_MS: 5 * 60 * 1000,
@@ -70,16 +69,237 @@ let appState = {
     unifiedHiddenDatasets: {},
     dailyEnergySeries: [],
     todayEnergy: null,
+    channelsPowerW: {},
+    chartTrustedFromMs: null,
 };
 
+/** Min/max (ms) for refresh settings; mins updated from /api/status when available. */
+const REFRESH_LIMITS = {
+    realtime: { min: 3000, max: 60000, label: 'temps réel' },
+    chart: { min: 15000, max: 300000, label: 'graphe' },
+    todayEnergy: { min: 15000, max: 300000, label: 'énergie jour' },
+    quality: { min: 60000, max: 1800000, label: 'qualité' },
+};
+
+let refreshTimerIds = [];
+
+function clampRefreshMs(valueMs, limits) {
+    const min = Number(limits.min) || 1000;
+    const max = Number(limits.max) || min;
+    const value = Number(valueMs);
+    if (!Number.isFinite(value)) return min;
+    return Math.min(max, Math.max(min, value));
+}
+
+function clampConfigRefreshIntervals() {
+    CONFIG.REFRESH_INTERVAL = clampRefreshMs(CONFIG.REFRESH_INTERVAL, REFRESH_LIMITS.realtime);
+    CONFIG.CHART_REFRESH_INTERVAL = clampRefreshMs(CONFIG.CHART_REFRESH_INTERVAL, REFRESH_LIMITS.chart);
+    CONFIG.TODAY_ENERGY_REFRESH_MS = clampRefreshMs(CONFIG.TODAY_ENERGY_REFRESH_MS, REFRESH_LIMITS.todayEnergy);
+    CONFIG.QUALITY_REFRESH_MS = clampRefreshMs(CONFIG.QUALITY_REFRESH_MS, REFRESH_LIMITS.quality);
+}
+
+function updateRefreshLimitsFromStatus(status) {
+    if (!status || typeof status !== 'object') return;
+
+    const pollSeconds = Math.max(1, Number(status.poll_seconds) || 3);
+    const pollMs = pollSeconds * 1000;
+    REFRESH_LIMITS.realtime.min = pollMs;
+    REFRESH_LIMITS.realtime.max = 60000;
+
+    // Graphe: agrégation SQLite lourde (~1 s sur Pi) + créneaux 15 min → pas plus rapide que 5× la collecte.
+    const chartMinSec = Math.max(15, pollSeconds * 5);
+    let chartMinMs = chartMinSec * 1000;
+    if (status.tuya_enabled) {
+        const tuyaPollSec = Math.max(5, Number(status.tuya_poll_seconds) || 30);
+        chartMinMs = Math.max(chartMinMs, tuyaPollSec * 1000);
+    }
+    REFRESH_LIMITS.chart.min = chartMinMs;
+    REFRESH_LIMITS.chart.max = 300000;
+
+    REFRESH_LIMITS.todayEnergy.min = Math.max(15000, pollMs * 3);
+    REFRESH_LIMITS.todayEnergy.max = 300000;
+
+    REFRESH_LIMITS.quality.min = 60000;
+    REFRESH_LIMITS.quality.max = 1800000;
+
+    clampConfigRefreshIntervals();
+    updateRefreshSettingHints();
+    applyRefreshSettingsToForm();
+}
+
+function formatLimitSeconds(ms) {
+    const sec = Math.round(Number(ms) / 1000);
+    if (sec >= 60 && sec % 60 === 0) return `${sec / 60} min`;
+    return `${sec} s`;
+}
+
+function updateRefreshSettingHints() {
+    const hints = {
+        'refresh-realtime-hint': REFRESH_LIMITS.realtime,
+        'refresh-chart-hint': REFRESH_LIMITS.chart,
+        'refresh-energy-hint': REFRESH_LIMITS.todayEnergy,
+        'refresh-quality-hint': REFRESH_LIMITS.quality,
+    };
+    Object.entries(hints).forEach(([id, limits]) => {
+        const node = document.getElementById(id);
+        if (!node) return;
+        node.textContent = `Autorisé : ${formatLimitSeconds(limits.min)} – ${formatLimitSeconds(limits.max)} (selon collecte et charge serveur)`;
+    });
+}
+
+function applyRefreshSettingsToForm() {
+    const map = [
+        ['refresh-realtime', CONFIG.REFRESH_INTERVAL, REFRESH_LIMITS.realtime],
+        ['refresh-chart', CONFIG.CHART_REFRESH_INTERVAL, REFRESH_LIMITS.chart],
+        ['refresh-energy', CONFIG.TODAY_ENERGY_REFRESH_MS, REFRESH_LIMITS.todayEnergy],
+        ['refresh-quality', CONFIG.QUALITY_REFRESH_MS, REFRESH_LIMITS.quality],
+    ];
+    map.forEach(([id, valueMs, limits]) => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        input.min = String(Math.ceil(limits.min / 1000));
+        input.max = String(Math.floor(limits.max / 1000));
+        input.value = String(Math.round(clampRefreshMs(valueMs, limits) / 1000));
+    });
+}
+
+function clearRefreshTimers() {
+    refreshTimerIds.forEach((id) => clearInterval(id));
+    refreshTimerIds = [];
+}
+
+function scheduleRefreshTimers() {
+    clearRefreshTimers();
+    clampConfigRefreshIntervals();
+    refreshTimerIds.push(setInterval(updateAllData, CONFIG.REFRESH_INTERVAL));
+    refreshTimerIds.push(setInterval(() => refreshTodayEnergy(false), CONFIG.TODAY_ENERGY_REFRESH_MS));
+    refreshTimerIds.push(setInterval(() => refreshPowerAnalytics(false), CONFIG.CHART_REFRESH_INTERVAL));
+    refreshTimerIds.push(setInterval(() => refreshClimateAnalytics(false), CONFIG.CHART_REFRESH_INTERVAL));
+}
+
 function getDefaultSelectedGraphChannels() {
-    const keys = ['total'];
+    const keys = [];
     getUsedChannelKeys().forEach((key) => {
         if (getChannelConfig(key).graph !== false) {
             keys.push(key);
         }
     });
-    return new Set(keys);
+    return new Set(keys.length > 0 ? keys : ['c1']);
+}
+
+function getEdfChannelKey() {
+    return CHANNEL_KEYS.find((key) => getChannelConfig(key).type === 'edf_total') || 'c1';
+}
+
+function getChannelGraphLabel(channelKey) {
+    const cfg = getChannelConfig(channelKey);
+    return cfg.name || `Canal ${String(channelKey).toUpperCase()}`;
+}
+
+function migrateSelectedGraphChannels(keys) {
+    const migrated = new Set();
+    const edfKey = getEdfChannelKey();
+    (keys || []).forEach((raw) => {
+        const key = String(raw || '').trim();
+        if (!key) return;
+        if (key === 'total') {
+            migrated.add(edfKey);
+            return;
+        }
+        if (CHANNEL_KEYS.includes(key) && getChannelConfig(key).type !== 'unused') {
+            migrated.add(key);
+        }
+    });
+    return migrated;
+}
+
+function normalizeChannelPowerW(rawSignedW, channelKey) {
+    const raw = toNumber(rawSignedW, NaN);
+    if (!Number.isFinite(raw)) return NaN;
+    const cfg = getChannelConfig(channelKey);
+    if (cfg.type === 'consumption') {
+        return Math.max(0, raw);
+    }
+    if (cfg.type === 'generator') {
+        return raw;
+    }
+    if (cfg.type === 'edf_total') {
+        return raw;
+    }
+    return raw;
+}
+
+function getChannelSignedPowerW(point, channelKey) {
+    if (!point || typeof point !== 'object') return NaN;
+
+    const stored = toNumber(point[`${channelKey}_power_w`], NaN);
+    if (Number.isFinite(stored)) {
+        return normalizeChannelPowerW(stored, channelKey);
+    }
+
+    const signedField = toNumber(point[`${channelKey}_signed_w`], NaN);
+    if (Number.isFinite(signedField)) {
+        return normalizeChannelPowerW(signedField, channelKey);
+    }
+
+    const cfg = getChannelConfig(channelKey);
+    const consW = toNumber(point[`${channelKey}_consumption_w`], NaN);
+    const prodW = toNumber(point[`${channelKey}_production_w`], NaN);
+    const netW = Number.isFinite(consW) && Number.isFinite(prodW) ? consW - prodW : NaN;
+
+    if (cfg.type === 'consumption') {
+        return Number.isFinite(consW) ? Math.max(0, consW) : NaN;
+    }
+    if (cfg.type === 'generator' || cfg.type === 'edf_total') {
+        return netW;
+    }
+    return netW;
+}
+
+function getChannelInstantPowerW(channelKey) {
+    const apiValue = appState.channelsPowerW && appState.channelsPowerW[channelKey];
+    if (Number.isFinite(Number(apiValue))) {
+        return normalizeChannelPowerW(Number(apiValue), channelKey);
+    }
+    if (appState.latestPoint) {
+        return getChannelSignedPowerW(appState.latestPoint, channelKey);
+    }
+    return NaN;
+}
+
+function computeUnmonitoredPowerFromPoint(point) {
+    if (!point || typeof point !== 'object') return NaN;
+    const c1Key = getEdfChannelKey();
+    const c1 = getChannelSignedPowerW(point, c1Key);
+    if (!Number.isFinite(c1)) return NaN;
+    let sumMonitored = 0;
+    let hasMonitored = false;
+    getUsedChannelKeys().forEach((key) => {
+        if (key === c1Key) return;
+        const value = getChannelSignedPowerW(point, key);
+        if (!Number.isFinite(value)) return;
+        sumMonitored += value;
+        hasMonitored = true;
+    });
+    if (!hasMonitored) return NaN;
+    return c1 - sumMonitored;
+}
+
+function computeUnmonitoredPowerW() {
+    const c1Key = getEdfChannelKey();
+    const c1 = getChannelInstantPowerW(c1Key);
+    if (!Number.isFinite(c1)) return NaN;
+    let sumMonitored = 0;
+    let hasMonitored = false;
+    getUsedChannelKeys().forEach((key) => {
+        if (key === c1Key) return;
+        const value = getChannelInstantPowerW(key);
+        if (!Number.isFinite(value)) return;
+        sumMonitored += value;
+        hasMonitored = true;
+    });
+    if (!hasMonitored) return NaN;
+    return c1 - sumMonitored;
 }
 
 // Initialize app
@@ -98,11 +318,7 @@ function startApp() {
         loadSettings();
         updateAllData();
         scheduleBootHeavyLoads();
-
-        setInterval(updateAllData, CONFIG.REFRESH_INTERVAL);
-        setInterval(() => refreshTodayEnergy(false), CONFIG.TODAY_ENERGY_REFRESH_MS);
-        setInterval(() => refreshPowerAnalytics(false), CONFIG.CHART_REFRESH_INTERVAL);
-        setInterval(() => refreshClimateAnalytics(false), CONFIG.CHART_REFRESH_INTERVAL);
+        scheduleRefreshTimers();
     } catch (error) {
         console.error('Bootstrap error:', error);
         const statusText = document.getElementById('status-text');
@@ -339,46 +555,79 @@ function buildUniformEnergySeries(rows, intervalSeconds) {
     return result;
 }
 
-function buildInstantPowerSeries(rows) {
-    const series = [];
-    const energySeries = buildUniformEnergySeries(rows, CONFIG.POWER_INTERVAL_SECONDS);
-    if (energySeries.length < 2) return series;
+function deltaIntegratedIndexToSignedW(prevCons, prevProd, curCons, curProd, deltaSeconds, channelKey) {
+    if (!Number.isFinite(deltaSeconds) || deltaSeconds <= 0 || deltaSeconds > 900) return NaN;
 
-    for (let i = 1; i < energySeries.length; i += 1) {
-        const prev = energySeries[i - 1];
-        const cur = energySeries[i];
-        const prevTs = new Date(prev.ts_utc);
-        const curTs = new Date(cur.ts_utc);
-        const deltaSeconds = (curTs.getTime() - prevTs.getTime()) / 1000;
-        if (!Number.isFinite(deltaSeconds) || deltaSeconds <= 0 || deltaSeconds > 900) {
-            continue;
+    const dCons = toNumber(curCons) - toNumber(prevCons);
+    const dProd = toNumber(curProd) - toNumber(prevProd);
+    if (dCons < -1e-9 || dProd < -1e-9) return NaN;
+
+    let deltaKwh = 0;
+    if (dCons > 0 && dProd > 0) {
+        deltaKwh = dCons - dProd;
+    } else if (dCons > 0) {
+        deltaKwh = dCons;
+    } else if (dProd > 0) {
+        deltaKwh = -dProd;
+    }
+
+    const rawW = (deltaKwh * 3600000) / deltaSeconds;
+    return normalizeChannelPowerW(rawW, channelKey);
+}
+
+function sortMeasurementRows(rows) {
+    return [...(rows || [])]
+        .filter((row) => row && row.ts_utc)
+        .sort((a, b) => parseTimestampMs(a.ts_utc) - parseTimestampMs(b.ts_utc));
+}
+
+function buildInstantPowerSeries(rows) {
+    const sorted = sortMeasurementRows(rows);
+    if (sorted.length < 2) return [];
+
+    const series = [];
+    for (let i = 0; i < sorted.length; i += 1) {
+        const cur = sorted[i];
+        const point = { ts_utc: cur.ts_utc };
+        let hasValue = false;
+
+        const hasStoredPower = CHANNEL_KEYS.some((key) => Number.isFinite(toNumber(cur[`${key}_power_w`], NaN)));
+        if (hasStoredPower) {
+            CHANNEL_KEYS.forEach((key) => {
+                const stored = toNumber(cur[`${key}_power_w`], NaN);
+                if (!Number.isFinite(stored)) return;
+                point[`${key}_signed_w`] = normalizeChannelPowerW(stored, key);
+                hasValue = true;
+            });
+        } else if (i > 0) {
+            const prev = sorted[i - 1];
+            const deltaSeconds = (parseTimestampMs(cur.ts_utc) - parseTimestampMs(prev.ts_utc)) / 1000;
+            if (!Number.isFinite(deltaSeconds) || deltaSeconds <= 0 || deltaSeconds > 900) {
+                continue;
+            }
+
+            CHANNEL_KEYS.forEach((key) => {
+                const signed = deltaIntegratedIndexToSignedW(
+                    prev[`${key}_consumption_kwh`],
+                    prev[`${key}_production_kwh`],
+                    cur[`${key}_consumption_kwh`],
+                    cur[`${key}_production_kwh`],
+                    deltaSeconds,
+                    key,
+                );
+                if (!Number.isFinite(signed)) return;
+                point[`${key}_signed_w`] = signed;
+                hasValue = true;
+            });
         }
 
-        const point = {
-            ts_utc: cur.ts_utc,
-            total_consumption_w: deltaKwhToW(prev.total_consumption_kwh, cur.total_consumption_kwh, deltaSeconds),
-            total_production_w: deltaKwhToW(prev.total_production_kwh, cur.total_production_kwh, deltaSeconds),
-        };
-        point.total_net_w = toNumber(point.total_consumption_w, 0) - toNumber(point.total_production_w, 0);
-
-        CHANNEL_KEYS.forEach((key) => {
-            const consumptionW = deltaKwhToW(prev[`${key}_consumption_kwh`], cur[`${key}_consumption_kwh`], deltaSeconds);
-            const productionW = deltaKwhToW(prev[`${key}_production_kwh`], cur[`${key}_production_kwh`], deltaSeconds);
-
-            point[`${key}_consumption_w`] = consumptionW;
-            point[`${key}_production_w`] = productionW;
-
-            const cfg = getChannelConfig(key);
-            if (cfg.type === 'edf_total') {
-                point[`${key}_signed_w`] = consumptionW - productionW;
-            } else if (cfg.type === 'generator') {
-                point[`${key}_signed_w`] = -productionW;
-            } else {
-                point[`${key}_signed_w`] = consumptionW;
+        if (hasValue) {
+            const unmonitored = computeUnmonitoredPowerFromPoint(point);
+            if (Number.isFinite(unmonitored)) {
+                point.unmonitored_w = unmonitored;
             }
-        });
-
-        series.push(point);
+            series.push(point);
+        }
     }
 
     return series;
@@ -395,9 +644,12 @@ function applyExponentialFilter(series, alpha = 0.1) {
     for (const point of series) {
         const previous = filtered.length > 0 ? filtered[filtered.length - 1] : null;
         const out = { ts_utc: point.ts_utc };
+        if (Number.isInteger(point.slot_index)) {
+            out.slot_index = point.slot_index;
+        }
 
         Object.entries(point).forEach(([key, value]) => {
-            if (key === 'ts_utc') return;
+            if (key === 'ts_utc' || key === 'slot_index') return;
 
             const current = Number(value);
             const prev = previous ? Number(previous[key]) : NaN;
@@ -458,8 +710,15 @@ function getLineColor(key, type) {
 }
 
 function parseTimestampMs(value) {
-    const ts = new Date(value).getTime();
+    const ts = new Date(normalizeUtcIso(value)).getTime();
     return Number.isFinite(ts) ? ts : NaN;
+}
+
+function normalizeUtcIso(value) {
+    if (!value || typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    if (trimmed.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(trimmed)) return trimmed;
+    return `${trimmed}Z`;
 }
 
 function formatChartTime(value) {
@@ -495,6 +754,19 @@ function initializeGraphSeriesControls() {
     if (humidityInput) humidityInput.addEventListener('change', onChange);
 }
 
+function getChartDayStartMs() {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();
+}
+
+function getChartTrustedStartMs() {
+    const dayStartMs = getChartDayStartMs();
+    if (Number.isFinite(appState.chartTrustedFromMs)) {
+        return Math.max(dayStartMs, appState.chartTrustedFromMs);
+    }
+    return dayStartMs;
+}
+
 function getFixedDailySlots() {
     const now = new Date();
     const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
@@ -509,6 +781,52 @@ function getFixedDailySlots() {
     }
 
     return { dayStartMs: dayStart.getTime(), slotMs, slots };
+}
+
+function getVisibleDailySlotRange() {
+    const { dayStartMs, slotMs, slots } = getFixedDailySlots();
+    const trustedStartMs = getChartTrustedStartMs();
+    const firstIndex = Math.max(0, Math.floor((trustedStartMs - dayStartMs) / slotMs));
+    const elapsedMs = Date.now() - dayStartMs;
+    const lastIndex = Math.min(
+        slots.length - 1,
+        Math.max(firstIndex, Math.floor(elapsedMs / slotMs)),
+    );
+
+    return {
+        dayStartMs,
+        slotMs,
+        slots: slots.slice(firstIndex, lastIndex + 1),
+        firstIndex,
+        lastIndex,
+        totalSlots: slots.length,
+    };
+}
+
+function sliceSeriesToVisibleSlots(series) {
+    const { firstIndex, lastIndex } = getVisibleDailySlotRange();
+    if (!Array.isArray(series)) return [];
+    return series.slice(firstIndex, lastIndex + 1);
+}
+
+function snapCurrentSlotToLivePower(series, channelKey) {
+    const { lastIndex } = getVisibleDailySlotRange();
+    if (!Array.isArray(series) || lastIndex < 0 || lastIndex >= series.length) return series;
+    const live = getChannelInstantPowerW(channelKey);
+    if (!Number.isFinite(live)) return series;
+    const out = series.slice();
+    out[lastIndex] = live;
+    return out;
+}
+
+function snapCurrentSlotToLiveUnmonitored(series) {
+    const { lastIndex } = getVisibleDailySlotRange();
+    if (!Array.isArray(series) || lastIndex < 0 || lastIndex >= series.length) return series;
+    const live = computeUnmonitoredPowerW();
+    if (!Number.isFinite(live)) return series;
+    const out = series.slice();
+    out[lastIndex] = live;
+    return out;
 }
 
 function aggregateByDailySlots(rows, getValue) {
@@ -529,6 +847,37 @@ function aggregateByDailySlots(rows, getValue) {
     });
 
     return counts.map((count, idx) => (count > 0 ? sums[idx] / count : null));
+}
+
+function mapPowerDataToDailySlots(getValue) {
+    const { slots } = getFixedDailySlots();
+    const result = new Array(slots.length).fill(null);
+    let usedSlotIndex = false;
+
+    (appState.powerSeries || []).forEach((point) => {
+        const idx = Number(point.slot_index);
+        if (Number.isInteger(idx) && idx >= 0 && idx < slots.length) {
+            usedSlotIndex = true;
+            const value = Number(getValue(point));
+            if (Number.isFinite(value)) result[idx] = value;
+            return;
+        }
+
+        const ts = parseTimestampMs(point.ts_utc);
+        if (!Number.isFinite(ts)) return;
+        const slotMs = 15 * 60 * 1000;
+        const dayStartMs = slots[0].tsMs;
+        const bucket = Math.floor((ts - dayStartMs) / slotMs);
+        if (bucket < 0 || bucket >= slots.length) return;
+        const value = Number(getValue(point));
+        if (!Number.isFinite(value)) return;
+        if (result[bucket] === null) {
+            result[bucket] = value;
+        }
+    });
+
+    if (usedSlotIndex) return result;
+    return aggregateByDailySlots(appState.powerSeries, getValue);
 }
 
 function resamplePowerSeries(series, intervalMinutes, mode = 'average') {
@@ -649,27 +998,23 @@ function getBusinessTotals(point) {
         };
     }
 
-    const activeKeys = CHANNEL_KEYS.filter((key) => getChannelConfig(key).type !== 'unused');
-    const edfKeys = activeKeys.filter((key) => getChannelConfig(key).type === 'edf_total');
-    const generatorKeys = activeKeys.filter((key) => getChannelConfig(key).type === 'generator');
-    const consumptionKeys = activeKeys.filter((key) => {
-        const type = getChannelConfig(key).type;
-        return type === 'consumption' || type === 'edf_total';
+    const edfKey = getEdfChannelKey();
+    const edfCfg = getChannelConfig(edfKey);
+    const consumptionW = edfCfg.type === 'edf_total'
+        ? getChannelSignedPowerW(point, edfKey)
+        : NaN;
+
+    let generatorSignedW = NaN;
+    getUsedChannelKeys().forEach((key) => {
+        if (getChannelConfig(key).type !== 'generator') return;
+        const value = getChannelSignedPowerW(point, key);
+        if (Number.isFinite(value)) generatorSignedW = value;
     });
-
-    const consumptionW = edfKeys.length > 0
-        ? edfKeys.reduce(
-            (sum, key) => sum + toNumber(point[`${key}_consumption_w`], 0) - toNumber(point[`${key}_production_w`], 0),
-            0,
-        )
-        : consumptionKeys.reduce((sum, key) => sum + toNumber(point[`${key}_consumption_w`], 0), 0);
-
-    const generatorAbsW = generatorKeys.reduce((sum, key) => sum + toNumber(point[`${key}_production_w`], 0), 0);
 
     return {
         consumptionW,
-        generatorAbsW,
-        generatorSignedW: Number.isFinite(generatorAbsW) ? -generatorAbsW : NaN,
+        generatorAbsW: Number.isFinite(generatorSignedW) ? Math.abs(generatorSignedW) : NaN,
+        generatorSignedW,
     };
 }
 
@@ -732,6 +1077,7 @@ async function updateAllData() {
             : null;
 
         updateStatus(status, latest);
+        updateRefreshLimitsFromStatus(status);
         updateTemperatureCard();
         renderSensorSettingsRows();
         refreshQualityInfo(false);
@@ -741,7 +1087,11 @@ async function updateAllData() {
         }
 
         if (latest && latest.data) {
+            if (latest.channels_power_w && typeof latest.channels_power_w === 'object') {
+                appState.channelsPowerW = latest.channels_power_w;
+            }
             updateDashboard(latest.data, status || {});
+            updateChannelInstantCards();
         }
 
         updateFooter();
@@ -859,25 +1209,51 @@ async function refreshPowerAnalytics(force) {
     }
 
     try {
-        const chartHours = Math.max(1, Math.min(Number(CONFIG.CHART_HOURS) || 24, 168));
-        const minutes = chartHours * 60;
-        const sampleLimit = Math.min(
-            CONFIG.CHART_MAX_SAMPLE_LIMIT,
-            Math.ceil((minutes * 60) / Math.max(CONFIG.REFRESH_INTERVAL, 1)) + 20,
-        );
-        const response = await fetch(`${CONFIG.API_BASE}/api/measurements?minutes=${minutes}&limit=${sampleLimit}`);
-        if (!response.ok) throw new Error('Failed to load power analytics');
+        const from = encodeURIComponent(getLocalDayStartIso());
+        const [chartResponse, rawResponse] = await Promise.all([
+            fetch(`${CONFIG.API_BASE}/api/measurements/chart-power?from_ts_utc=${from}&slot_minutes=${CONFIG.CHART_RESAMPLE_MINUTES}`),
+            fetch(`${CONFIG.API_BASE}/api/measurements?from_ts_utc=${from}&limit=200`),
+        ]);
 
-        const payload = await response.json();
-        const rawSeries = buildInstantPowerSeries(payload.data || []);
-        const filteredSeries = applyExponentialFilter(rawSeries, CONFIG.REALTIME_FILTER_ALPHA);
+        if (!chartResponse.ok) throw new Error('Failed to load chart power series');
 
-        appState.rawPowerSeries = rawSeries;
+        const chartPayload = await chartResponse.json();
+        if (chartPayload.trusted_from_utc) {
+            appState.chartTrustedFromMs = parseTimestampMs(chartPayload.trusted_from_utc);
+        }
+        const slotSeries = (chartPayload.data || []).map((point) => {
+            const out = {
+                ts_utc: normalizeUtcIso(point.ts_utc),
+                slot_index: Number(point.slot_index),
+            };
+            CHANNEL_KEYS.forEach((key) => {
+                const signed = toNumber(point[`${key}_signed_w`], NaN);
+                if (Number.isFinite(signed)) {
+                    out[`${key}_signed_w`] = normalizeChannelPowerW(signed, key);
+                }
+            });
+            const unmonitored = computeUnmonitoredPowerFromPoint(out);
+            if (Number.isFinite(unmonitored)) out.unmonitored_w = unmonitored;
+            return out;
+        });
+
+        const filteredSeries = slotSeries;
+
+        appState.rawPowerSeries = slotSeries;
         appState.powerSeries = filteredSeries;
         appState.latestPoint = filteredSeries.length ? filteredSeries[filteredSeries.length - 1] : null;
         appState.lastPowerRefreshMs = now;
 
+        if (rawResponse.ok) {
+            const rawPayload = await rawResponse.json();
+            const tailSeries = buildInstantPowerSeries(rawPayload.data || []);
+            if (tailSeries.length > 0) {
+                appState.latestPoint = tailSeries[tailSeries.length - 1];
+            }
+        }
+
         updateChannelInstantCards();
+        refreshChartFilters();
         renderTrendChart();
     } catch (error) {
         console.error('Error loading instant analytics:', error);
@@ -943,7 +1319,7 @@ function renderTrendChart() {
     const canvas = document.getElementById('trend-chart');
     if (!canvas) return;
 
-    const { slots } = getFixedDailySlots();
+    const { slots } = getVisibleDailySlotRange();
     const labels = slots.map((slot) => slot.label);
     const datasets = [];
     const showConsumption = CONFIG.GRAPH_SERIES.consumption !== false;
@@ -952,49 +1328,52 @@ function renderTrendChart() {
     syncSelectedGraphChannels();
 
     if (showConsumption) {
-        if (appState.selectedGraphChannels.has('total')) {
-            const powerData = aggregateByDailySlots(appState.powerSeries, (point) => {
-                const totals = getBusinessTotals(point);
-                return totals.consumptionW;
-            });
-            datasets.push({
-                label: 'Réseau C1 net (W)',
-                data: powerData,
-                borderColor: '#dc2626',
-                backgroundColor: 'transparent',
-                borderWidth: 2.5,
-                tension: 0.25,
-                spanGaps: true,
-                pointRadius: 1.5,
-                yAxisID: 'yPower',
-            });
-        }
-
         getUsedChannelKeys().forEach((channelKey) => {
             if (getChannelConfig(channelKey).graph === false) return;
             if (!appState.selectedGraphChannels.has(channelKey)) return;
-            const cfg = getChannelConfig(channelKey);
-            const series = aggregateByDailySlots(appState.powerSeries, (point) => point[`${channelKey}_signed_w`]);
+
+            const series = snapCurrentSlotToLivePower(sliceSeriesToVisibleSlots(mapPowerDataToDailySlots(
+                (point) => getChannelSignedPowerW(point, channelKey),
+            )), channelKey);
             if (!series.some((v) => Number.isFinite(v))) return;
 
-            const typeLabel = cfg.type === 'generator'
-                ? 'Generation'
-                : cfg.type === 'edf_total'
-                    ? 'Réseau net'
-                    : 'Consommation';
+            const cfg = getChannelConfig(channelKey);
+            const colorType = cfg.type === 'generator' ? 'production' : 'consumption';
 
             datasets.push({
-                label: `${cfg.name} - ${typeLabel} (W signe)`,
+                label: `${getChannelGraphLabel(channelKey)} (W)`,
                 data: series,
-                borderColor: getLineColor(channelKey, 'consumption'),
+                borderColor: getLineColor(channelKey, colorType),
                 backgroundColor: 'transparent',
-                borderWidth: 1.8,
+                borderWidth: cfg.type === 'edf_total' ? 2.5 : 1.8,
                 tension: 0.25,
-                spanGaps: true,
-                pointRadius: 1.2,
+                spanGaps: false,
+                pointRadius: cfg.type === 'edf_total' ? 1.5 : 1.2,
                 yAxisID: 'yPower',
             });
         });
+
+        const unmonitoredSeries = snapCurrentSlotToLiveUnmonitored(sliceSeriesToVisibleSlots(mapPowerDataToDailySlots(
+            (point) => (
+                Number.isFinite(toNumber(point.unmonitored_w, NaN))
+                    ? toNumber(point.unmonitored_w, NaN)
+                    : computeUnmonitoredPowerFromPoint(point)
+            ),
+        )));
+        if (unmonitoredSeries.some((v) => Number.isFinite(v))) {
+            datasets.push({
+                label: 'Autre non monitore (W)',
+                data: unmonitoredSeries,
+                borderColor: '#64748b',
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                borderDash: [6, 4],
+                tension: 0.25,
+                spanGaps: false,
+                pointRadius: 1.2,
+                yAxisID: 'yPower',
+            });
+        }
     }
 
     const climateSeries = Array.isArray(appState.climateSeries) ? appState.climateSeries : [];
@@ -1018,7 +1397,7 @@ function renderTrendChart() {
 
         if (showTemperature) {
             const tempLabel = `${sensorName} (${sensorType}) - Temp (deg C)`;
-            const tempData = aggregateByDailySlots(sensorRows, (row) => row.temperature_c);
+            const tempData = sliceSeriesToVisibleSlots(aggregateByDailySlots(sensorRows, (row) => row.temperature_c));
             if (tempData.some((v) => Number.isFinite(v))) {
                 datasets.push({
                     label: tempLabel,
@@ -1036,7 +1415,7 @@ function renderTrendChart() {
 
         if (showHumidity) {
             const humLabel = `${sensorName} (${sensorType}) - Hum (%)`;
-            const humData = aggregateByDailySlots(sensorRows, (row) => row.humidity_pct);
+            const humData = sliceSeriesToVisibleSlots(aggregateByDailySlots(sensorRows, (row) => row.humidity_pct));
             if (humData.some((v) => Number.isFinite(v))) {
                 datasets.push({
                     label: humLabel,
@@ -1388,10 +1767,7 @@ function updateDashboard(measurement) {
 }
 
 function updateChannelInstantCards() {
-    const point = appState.latestPoint;
-    if (!point) return;
-
-    const latestTs = new Date(point.ts_utc);
+    const latestTs = appState.lastUpdate ? new Date(appState.lastUpdate) : new Date();
     const yesterday = findClosestReferencePoint(appState.powerSeries, latestTs, 1);
 
     CHANNEL_KEYS.forEach((key) => {
@@ -1424,8 +1800,8 @@ function updateChannelInstantCards() {
 
         card.classList.remove('hidden');
 
-        const signed = toNumber(point[`${key}_signed_w`], NaN);
-        const ySigned = toNumber(yesterday ? yesterday[`${key}_signed_w`] : NaN, NaN);
+        const signed = getChannelInstantPowerW(key);
+        const ySigned = yesterday ? getChannelSignedPowerW(yesterday, key) : NaN;
 
         const consNode = document.getElementById(`${key}-cons-w`);
         const consLabel = consNode?.closest('.channel-row')?.querySelector('.channel-label');
@@ -1436,8 +1812,12 @@ function updateChannelInstantCards() {
         const prodRow = prodNode?.closest('.channel-row');
         if (prodRow) prodRow.style.display = 'none';
 
-        document.getElementById(`${key}-trend`).textContent = fmtTrend(Math.abs(signed), Math.abs(ySigned)).replace('Tendance: ', '');
+        const trendBase = cfg.type === 'generator' ? Math.abs(signed) : signed;
+        const trendPrev = cfg.type === 'generator' ? Math.abs(ySigned) : ySigned;
+        document.getElementById(`${key}-trend`).textContent = fmtTrend(trendBase, trendPrev).replace('Tendance: ', '');
     });
+
+    setTextById('unmonitored-power-w', fmtW(computeUnmonitoredPowerW()));
 }
 
 /* ============ History helpers ============ */
@@ -1559,10 +1939,12 @@ function initializeChartContainer() {
 
 function syncSelectedGraphChannels() {
     const used = getUsedChannelKeys().filter((key) => getChannelConfig(key).graph !== false);
-    const allKeys = new Set(['total', ...used]);
+    const allKeys = new Set(used);
 
     if (!appState.selectedGraphChannels || appState.selectedGraphChannels.size === 0) {
         appState.selectedGraphChannels = getDefaultSelectedGraphChannels();
+    } else {
+        appState.selectedGraphChannels = migrateSelectedGraphChannels(Array.from(appState.selectedGraphChannels));
     }
 
     appState.selectedGraphChannels.forEach((key) => {
@@ -1598,7 +1980,7 @@ function refreshChartFilters() {
                 appState.selectedGraphChannels.delete(key);
             }
             if (appState.selectedGraphChannels.size === 0) {
-                appState.selectedGraphChannels.add('total');
+                appState.selectedGraphChannels.add(getEdfChannelKey());
                 refreshChartFilters();
             }
             renderTrendChart();
@@ -1612,12 +1994,10 @@ function refreshChartFilters() {
         wrap.appendChild(item);
     };
 
-    addCheckbox('total', 'Total');
-
     getUsedChannelKeys().forEach((key) => {
         const cfg = getChannelConfig(key);
         if (cfg.graph === false) return;
-        addCheckbox(key, cfg.name);
+        addCheckbox(key, getChannelGraphLabel(key));
     });
 }
 
@@ -1890,7 +2270,10 @@ function loadSettings() {
     }
 
     if (settings) {
-        CONFIG.REFRESH_INTERVAL = settings.refreshInterval || 5000;
+        CONFIG.REFRESH_INTERVAL = settings.refreshInterval || settings.realtimeRefreshMs || 5000;
+        CONFIG.CHART_REFRESH_INTERVAL = settings.chartRefreshMs || 60000;
+        CONFIG.TODAY_ENERGY_REFRESH_MS = settings.todayEnergyRefreshMs || 45000;
+        CONFIG.QUALITY_REFRESH_MS = settings.qualityRefreshMs || 5 * 60 * 1000;
         CONFIG.CHART_HOURS = settings.chartHours || 24;
         CONFIG.BUY_PRICE_KWH = settings.buyPriceKwh ?? 0.25;
         CONFIG.SURPLUS_PRICE_KWH = settings.surplusPriceKwh ?? 0;
@@ -1906,11 +2289,7 @@ function loadSettings() {
         }
 
         if (Array.isArray(settings.selectedGraphChannels)) {
-            appState.selectedGraphChannels = new Set(
-                settings.selectedGraphChannels
-                    .map((v) => String(v || '').trim())
-                    .filter((v) => v.length > 0)
-            );
+            appState.selectedGraphChannels = migrateSelectedGraphChannels(settings.selectedGraphChannels);
         }
         appState.unifiedHiddenDatasets =
             settings.unifiedHiddenDatasets && typeof settings.unifiedHiddenDatasets === 'object'
@@ -1945,13 +2324,11 @@ function loadSettings() {
             CONFIG.SENSORS = mergedSensors;
         }
 
-        const refreshInput = document.getElementById('refresh-interval');
         const chartHoursInput = document.getElementById('chart-hours');
         const buyInput = document.getElementById('buy-price-kwh');
         const surplusInput = document.getElementById('surplus-price-kwh');
         const sellInput = document.getElementById('sell-price-kwh');
         const resaleInput = document.getElementById('has-resale-contract');
-        if (refreshInput) refreshInput.value = CONFIG.REFRESH_INTERVAL / 1000;
         if (chartHoursInput) chartHoursInput.value = CONFIG.CHART_HOURS;
         if (buyInput) buyInput.value = CONFIG.BUY_PRICE_KWH;
         if (surplusInput) surplusInput.value = CONFIG.SURPLUS_PRICE_KWH;
@@ -1962,11 +2339,17 @@ function loadSettings() {
         const surplusInput = document.getElementById('surplus-price-kwh');
         const sellInput = document.getElementById('sell-price-kwh');
         const resaleInput = document.getElementById('has-resale-contract');
+        const chartHoursInput = document.getElementById('chart-hours');
+        if (chartHoursInput) chartHoursInput.value = CONFIG.CHART_HOURS;
         if (buyInput) buyInput.value = CONFIG.BUY_PRICE_KWH;
         if (surplusInput) surplusInput.value = CONFIG.SURPLUS_PRICE_KWH;
         if (sellInput) sellInput.value = CONFIG.SELL_PRICE_KWH;
         if (resaleInput) resaleInput.checked = CONFIG.HAS_RESALE_CONTRACT;
     }
+
+    clampConfigRefreshIntervals();
+    updateRefreshSettingHints();
+    applyRefreshSettingsToForm();
 
     if (!appState.selectedGraphChannels || appState.selectedGraphChannels.size === 0) {
         appState.selectedGraphChannels = getDefaultSelectedGraphChannels();
@@ -1996,18 +2379,25 @@ function applyChannelSettingsToForm() {
 }
 
 function saveSettings() {
-    const refreshInput = document.getElementById('refresh-interval');
+    const refreshRealtimeInput = document.getElementById('refresh-realtime');
+    const refreshChartInput = document.getElementById('refresh-chart');
+    const refreshEnergyInput = document.getElementById('refresh-energy');
+    const refreshQualityInput = document.getElementById('refresh-quality');
     const chartHoursInput = document.getElementById('chart-hours');
     const buyInput = document.getElementById('buy-price-kwh');
     const surplusInput = document.getElementById('surplus-price-kwh');
     const sellInput = document.getElementById('sell-price-kwh');
     const resaleInput = document.getElementById('has-resale-contract');
 
-    if (!refreshInput || !chartHoursInput || !buyInput || !surplusInput || !sellInput || !resaleInput) {
+    if (!refreshRealtimeInput || !refreshChartInput || !refreshEnergyInput || !refreshQualityInput
+        || !chartHoursInput || !buyInput || !surplusInput || !sellInput || !resaleInput) {
         return;
     }
 
-    const refreshInterval = parseInt(refreshInput.value, 10) * 1000;
+    const refreshInterval = parseInt(refreshRealtimeInput.value, 10) * 1000;
+    const chartRefreshMs = parseInt(refreshChartInput.value, 10) * 1000;
+    const todayEnergyRefreshMs = parseInt(refreshEnergyInput.value, 10) * 1000;
+    const qualityRefreshMs = parseInt(refreshQualityInput.value, 10) * 1000;
     const chartHours = parseInt(chartHoursInput.value, 10);
     const buyPriceKwh = parseFloat(buyInput.value);
     const surplusPriceKwh = parseFloat(surplusInput.value);
@@ -2045,7 +2435,10 @@ function saveSettings() {
         };
     });
 
-    CONFIG.REFRESH_INTERVAL = Number.isFinite(refreshInterval) ? Math.max(1000, refreshInterval) : 3000;
+    CONFIG.REFRESH_INTERVAL = clampRefreshMs(refreshInterval, REFRESH_LIMITS.realtime);
+    CONFIG.CHART_REFRESH_INTERVAL = clampRefreshMs(chartRefreshMs, REFRESH_LIMITS.chart);
+    CONFIG.TODAY_ENERGY_REFRESH_MS = clampRefreshMs(todayEnergyRefreshMs, REFRESH_LIMITS.todayEnergy);
+    CONFIG.QUALITY_REFRESH_MS = clampRefreshMs(qualityRefreshMs, REFRESH_LIMITS.quality);
     CONFIG.CHART_HOURS = Number.isFinite(chartHours) ? Math.max(1, Math.min(720, chartHours)) : 24;
     CONFIG.BUY_PRICE_KWH = Number.isFinite(buyPriceKwh) ? Math.max(0, buyPriceKwh) : 0.25;
     CONFIG.SURPLUS_PRICE_KWH = Number.isFinite(surplusPriceKwh) ? Math.max(0, surplusPriceKwh) : 0;
@@ -2053,11 +2446,17 @@ function saveSettings() {
     CONFIG.HAS_RESALE_CONTRACT = hasResaleContract;
     CONFIG.CHANNELS = channels;
     CONFIG.SENSORS = sensors;
+    appState.selectedGraphChannels = migrateSelectedGraphChannels(Array.from(appState.selectedGraphChannels));
+    appState.unifiedHiddenDatasets = {};
 
     localStorage.setItem(
         'datalogueur-settings',
         JSON.stringify({
             refreshInterval: CONFIG.REFRESH_INTERVAL,
+            realtimeRefreshMs: CONFIG.REFRESH_INTERVAL,
+            chartRefreshMs: CONFIG.CHART_REFRESH_INTERVAL,
+            todayEnergyRefreshMs: CONFIG.TODAY_ENERGY_REFRESH_MS,
+            qualityRefreshMs: CONFIG.QUALITY_REFRESH_MS,
             chartHours: CONFIG.CHART_HOURS,
             buyPriceKwh: CONFIG.BUY_PRICE_KWH,
             surplusPriceKwh: CONFIG.SURPLUS_PRICE_KWH,
@@ -2065,13 +2464,15 @@ function saveSettings() {
             hasResaleContract: CONFIG.HAS_RESALE_CONTRACT,
             unifiedChartMode: CONFIG.UNIFIED_CHART_MODE,
             graphSeries: CONFIG.GRAPH_SERIES,
-            selectedGraphChannels: Array.from(appState.selectedGraphChannels),
+            selectedGraphChannels: Array.from(migrateSelectedGraphChannels(Array.from(appState.selectedGraphChannels))),
             unifiedHiddenDatasets: appState.unifiedHiddenDatasets,
             channels: CONFIG.CHANNELS,
             sensors: CONFIG.SENSORS,
         })
     );
 
+    scheduleRefreshTimers();
+    applyRefreshSettingsToForm();
     refreshChartFilters();
     renderSensorSettingsRows();
     updateChannelInstantCards();

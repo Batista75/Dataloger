@@ -14,7 +14,9 @@ import requests
 from requests.auth import HTTPDigestAuth
 
 from src.collector.service import CollectorService
+from src.core.chart_power_query import fetch_chart_power_for_day
 from src.core.config import settings
+from src.core.power_slots import backfill_power_slots_for_day, try_commit_closed_slots
 from src.core.energy_metrics import compute_energy_metrics, deltas_from_indexes
 from src.db.init_db import init_database
 from src.db.repository import MeasurementRepository
@@ -36,6 +38,20 @@ collector = CollectorService(repo=repo)
 @app.on_event("startup")
 def startup_event() -> None:
 	init_database()
+	if settings.chart_mark_suspect_on_startup:
+		updated = repo.mark_suspect_measurements_before_trusted_cutoff(
+			settings.chart_unreliable_from,
+			settings.chart_unreliable_until,
+			settings.chart_unreliable_local_start,
+		)
+		if updated:
+			repo.log_event(
+				"INFO",
+				"quality",
+				f"Marked {updated} measurements as suspect (quality_flag=3)",
+				datetime.now(timezone.utc).isoformat(),
+			)
+	backfill_power_slots_for_day(repo, settings)
 	collector.start()
 
 
@@ -135,6 +151,7 @@ def measurement_latest() -> dict[str, Any]:
 
 	return {
 		"data": latest,
+		"channels_power_w": collector.get_channels_power_w(),
 		"data_age_seconds": age_seconds,
 		"is_fresh": is_fresh,
 		"ts_utc": datetime.now(timezone.utc).isoformat(),
@@ -203,6 +220,25 @@ def measurements(
 		"to_ts_utc": to_ts.astimezone(timezone.utc).isoformat(),
 		"data": rows,
 	}
+
+
+@app.get("/api/measurements/chart-power")
+def measurements_chart_power(
+	from_ts_utc: str | None = Query(default=None, description="Local midnight as ISO UTC"),
+	slot_minutes: int | None = Query(default=None, ge=5, le=60),
+) -> dict[str, Any]:
+	now = datetime.now(timezone.utc)
+	if from_ts_utc:
+		try:
+			from_ts = datetime.fromisoformat(from_ts_utc.replace("Z", "+00:00")).astimezone(timezone.utc)
+		except ValueError:
+			from_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
+	else:
+		from_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+	slot_min = slot_minutes or settings.chart_slot_minutes
+	result = fetch_chart_power_for_day(repo, settings, from_ts, slot_minutes=slot_min)
+	return result
 
 
 @app.get("/api/quality/latest")

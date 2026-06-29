@@ -5,7 +5,10 @@ import threading
 from datetime import datetime, timedelta, timezone
 
 from src.collector.em06_client import EM06Client
+from src.core.channel_polarity import apply_channel_polarity
 from src.core.config import settings
+from src.core.power_slots import try_commit_closed_slots
+from src.core.quality_flags import QUALITY_LIVE
 from src.db.repository import Measurement
 from src.db.repository import MeasurementRepository
 
@@ -80,7 +83,9 @@ class CollectorService:
 			try:
 				measurement = self.client.read_measurement(poll_seconds=interval)
 				measurement = self._apply_left_riemann_correction(measurement)
+				measurement.quality_flag = QUALITY_LIVE
 				self.repo.insert_measurement(measurement)
+				try_commit_closed_slots(self.repo, settings)
 				self.sensor_state = "connected"
 				self.last_error = None
 				self.last_sample_ts_utc = measurement.ts_utc
@@ -104,9 +109,12 @@ class CollectorService:
 		self._last_commit_ts_utc = self._prev_ts_utc
 		self._riemann_ready = False
 
+	def get_channels_power_w(self) -> dict[str, float]:
+		return {channel: round(float(self._confirmed_power_w.get(channel, 0.0)), 3) for channel in CHANNELS}
+
 	def _apply_left_riemann_correction(self, measurement: Measurement) -> Measurement:
 		current_ts_utc = _parse_ts_utc(measurement.ts_utc)
-		raw_signed_power_w = _extract_signed_power_w(measurement)
+		raw_signed_power_w = apply_channel_polarity(_extract_signed_power_w(measurement))
 
 		if settings.em06_mode == "refoss_local_socket":
 			stable_signed_power_w = {}
@@ -121,6 +129,9 @@ class CollectorService:
 
 		if self._riemann_ready:
 			self._apply_20s_integration(stable_signed_power_w, current_ts_utc)
+
+		for channel in CHANNELS:
+			setattr(measurement, f"{channel}_power_w", round(float(stable_signed_power_w[channel]), 3))
 
 		for channel in CHANNELS:
 			setattr(measurement, f"{channel}_consumption_kwh", round(self._consumption_index_kwh[channel], 6))
